@@ -1,5 +1,4 @@
 import random
-import asyncio
 from typing import Optional
 
 _REACTIONS = {
@@ -20,43 +19,28 @@ def pick_reaction(category: str) -> str:
     return random.choice(emojis)
 
 
-async def react_message(client, msg, category: str = "success", timeout: int = 5):
+async def react_message(client, msg, category: str = "success") -> None:
     """
-    Try to add a reaction to `msg` using `msg.react()` (if Pyrogram supports it).
-    If that fails, send a small emoji reply and delete it after `timeout` seconds.
-    - client: pyrogram Client
-    - msg: pyrogram.types.Message (the message to react to)
-    - category: reaction category from _REACTIONS
-    - timeout: seconds before deleting fallback emoji message
+    Pehle koshish karega real Telegram reaction (msg.react) lagane ki.
+    Agar support nahi hua / fail hua to user ke message par stylish emoji ka reply bhej dega.
     """
     emoji = pick_reaction(category)
-    # 1) try native react (some Pyrogram versions support Message.react)
+
+    # 1) Native message.react() (agar pyrogram + Bot API support kare)
     try:
         if hasattr(msg, "react"):
             await msg.react(emoji)
-            return True
+            return
     except Exception:
-        # fallthrough to fallback method
         pass
 
-    # 2) fallback — send a short ephemeral message with emoji and delete it later
+    # 2) Fallback – normal emoji reply
     try:
-        sent = await client.send_message(
+        await client.send_message(
             chat_id=msg.chat.id,
             text=emoji,
             reply_to_message_id=msg.id,
             disable_web_page_preview=True,
         )
-        # schedule delete
-        async def _del():
-            await asyncio.sleep(timeout)
-            try:
-                await sent.delete()
-            except Exception:
-                pass
-
-        # schedule background task (no await)
-        asyncio.create_task(_del())
-        return True
     except Exception:
-        return False
+        pass
