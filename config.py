@@ -46,3 +46,11 @@ FORCE_SUB_CHANNEL = os.getenv("FORCE_SUB_CHANNEL", "-1002269651634").strip()
 
 # progress update duration (seconds)
 PROGRESS_UPDATE_INTERVAL = 3
+
+# Free users ke liye daily limit
+DEFAULT_DAILY_COUNT_LIMIT = 50          # 50 uploads per day
+DEFAULT_DAILY_SIZE_LIMIT_MB = 10240     # 10240 MB = 10 GB per day
+
+# Primium users ke liye daily limit
+PREMIUM_DAILY_COUNT_LIMIT = 0   # 0 = unlimited
+PREMIUM_DAILY_SIZE_LIMIT_MB = 0
