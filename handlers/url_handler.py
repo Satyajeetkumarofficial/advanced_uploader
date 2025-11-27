@@ -27,16 +27,19 @@ from utils.progress import human_readable
 from config import MAX_FILE_SIZE, NORMAL_COOLDOWN_SECONDS
 from handlers.start import help_text, help_keyboard, about_text
 from utils.forcesub import ensure_forcesub
-from utils.reactions import pick_reaction, react_message
+from utils.reactions import react_message
 
-
+# simple URL regex
 URL_REGEX = r"https?://[^\s]+"
 
-# per-user state (yt-dlp / direct URL flow)
+# per-user pending job state
 PENDING_DOWNLOAD: dict[int, dict] = {}
 
 
 def split_url_and_name(text: str):
+    """
+    "url | new_name.mp4" format ko split karta hai.
+    """
     parts = text.split("|", 1)
     url_part = parts[0].strip()
     custom_name = parts[1].strip() if len(parts) > 1 else None
@@ -44,23 +47,32 @@ def split_url_and_name(text: str):
 
 
 def safe_filename(name: str) -> str:
+    """
+    Invalid filesystem chars hata deta hai.
+    """
     name = "".join(c for c in name if c not in "\\/:*?\"<>|")
     return name or "file"
 
 
 def is_ytdlp_site(url: str) -> bool:
+    """
+    Abhi ke liye sab URLs ko yt-dlp try karne do.
+    """
     return True
 
 
 def build_quality_keyboard(formats):
+    """
+    Yt-dlp formats se quality buttons banata hai.
+    """
     buttons = []
     for f in formats:
-        h = f["height"] or "?"
-        size_str = human_readable(f["filesize"]) if f["filesize"] else "?"
+        h = f.get("height") or "?"
+        size_str = human_readable(f.get("filesize")) if f.get("filesize") else "?"
         buttons.append(
             [
                 InlineKeyboardButton(
-                    f"{h}p {f['ext']} ({size_str})",
+                    f"{h}p {f.get('ext', '')} ({size_str})",
                     callback_data=f"fmt_{f['format_id']}",
                 )
             ]
@@ -116,9 +128,11 @@ def register_url_handlers(app: Client):
     async def handle_url(client: Client, message: Message):
         user_id = message.from_user.id
 
+        # banned
         if is_banned(user_id):
             return
 
+        # force subscribe
         if not await ensure_forcesub(client, message):
             return
 
@@ -130,6 +144,7 @@ def register_url_handlers(app: Client):
         # =========================
         state = PENDING_DOWNLOAD.get(user_id)
         if state and state.get("mode") == "await_new_name":
+            # agar user ne naya URL bhej diya → purana rename mode cancel
             if re.search(URL_REGEX, text):
                 del PENDING_DOWNLOAD[user_id]
             else:
@@ -145,6 +160,7 @@ def register_url_handlers(app: Client):
                 state["custom_name"] = new_name
                 state["filename"] = new_name
 
+                # yt-dlp case → ab quality choose
                 if state["type"] == "yt":
                     formats = state["formats"]
                     txt = (
@@ -163,6 +179,7 @@ def register_url_handlers(app: Client):
                         pass
                     return
 
+                # direct case → straight download
                 if state["type"] == "direct":
                     url = state["url"]
                     filename = state["filename"]
@@ -213,6 +230,7 @@ def register_url_handlers(app: Client):
         url_candidate, custom_name = split_url_and_name(text)
         match = re.search(URL_REGEX, url_candidate)
         if not match:
+            # random text → ignore
             return
 
         url = match.group(0)
@@ -222,7 +240,7 @@ def register_url_handlers(app: Client):
         except Exception:
             pass
 
-        # cooldown
+        # cooldown for normal users
         if not user.get("is_premium", False) and NORMAL_COOLDOWN_SECONDS > 0:
             last_ts = user.get("last_upload_ts") or 0
             now = time.time()
@@ -238,6 +256,7 @@ def register_url_handlers(app: Client):
                 )
                 return
 
+        # daily limits
         limit_c = user["daily_count_limit"]
         limit_s = user["daily_size_limit"]
         used_c = user["used_count_today"]
@@ -275,7 +294,7 @@ def register_url_handlers(app: Client):
                 )
                 return
 
-        # ========= yt-dlp TRY =========
+        # ========= 2.1 yt-dlp TRY =========
         try:
             formats, info = get_formats(url) if is_ytdlp_site(url) else ([], None)
         except Exception:
@@ -298,7 +317,7 @@ def register_url_handlers(app: Client):
             base_name = custom_name or f"{title}.mp4"
             base_name = safe_filename(base_name)
 
-            thumb_url = info.get("thumbnail")
+            thumb_url = info.get("thumbnail")  # YouTube/other site thumbnail
 
             PENDING_DOWNLOAD[user_id] = {
                 "type": "yt",
@@ -333,7 +352,7 @@ def register_url_handlers(app: Client):
             )
             return
 
-        # ========= DIRECT FILE MODE =========
+        # ========= 2.2 DIRECT FILE MODE =========
         await wait_msg.edit_text("🌐 Direct file download mode...")
 
         filename = head_fname or url.split("/")[-1] or "file"
@@ -343,6 +362,7 @@ def register_url_handlers(app: Client):
             filename = custom_name
         filename = safe_filename(filename)
 
+        # HTML / webpage ko block karo (jab tak extension video/document na ho)
         ctype_lower = (head_ctype or "").lower()
         if ctype_lower.startswith("text/html") and not is_video_ext(filename):
             await wait_msg.edit_text(
@@ -396,7 +416,7 @@ def register_url_handlers(app: Client):
         except Exception:
             pass
 
-        # HELP / ABOUT
+        # ------- HELP / ABOUT MAIN BUTTONS -------
         if data == "open_help":
             await msg.reply_text(
                 help_text(),
@@ -420,7 +440,9 @@ def register_url_handlers(app: Client):
                 pass
             return
 
-        # SETTINGS (help-menu buttons)
+        # ==========================
+        #  SETTINGS SUBMENU
+        # ==========================
         if data.startswith("settings_"):
             user = get_user_doc(user_id)
 
@@ -547,7 +569,7 @@ def register_url_handlers(app: Client):
 
             return
 
-        # Thumbnail submenu extra actions
+        # -------- Thumbnail submenu extra actions --------
         if data == "thumb_set":
             await msg.reply_text(
                 "📸 Thumbnail set karne ke liye kisi **photo par reply** karke `/setthumb` bhejo."
@@ -606,7 +628,7 @@ def register_url_handlers(app: Client):
                 pass
             return
 
-        # Caption submenu extra
+        # -------- Caption submenu extra actions --------
         if data == "caption_set":
             await msg.reply_text(
                 "📝 Caption set karne ke liye `/setcaption mera caption {file_name}` use karo.\n"
@@ -691,6 +713,7 @@ def register_url_handlers(app: Client):
         if limit_s and limit_s > 0:
             remaining_size = max(limit_s - used_s, 0)
 
+        # -------- name_default ----------
         if data == "name_default":
             if state["type"] == "yt":
                 formats = state["formats"]
@@ -765,6 +788,7 @@ def register_url_handlers(app: Client):
                         del PENDING_DOWNLOAD[user_id]
                 return
 
+        # -------- name_rename ----------
         if data == "name_rename":
             state["mode"] = "await_new_name"
             prompt = await msg.reply_text(
@@ -778,30 +802,39 @@ def register_url_handlers(app: Client):
                 pass
             return
 
+        # -------- direct_dl ----------
         if data == "direct_dl":
-            try:
-                await query.answer("Direct download try ho raha hai...", show_alert=False)
-            except Exception:
-                pass
-
             state = PENDING_DOWNLOAD.get(user_id)
             if not state:
                 await msg.edit_text("⏱ Time out or no pending job. Dubara URL bhejo.")
                 return
 
             progress_msg = await msg.edit_text("⬇️ Direct download try ho raha hai...")
+
+            # YouTube / yt-dlp thumbnail agar available ho to pahle download karo
+            job_thumb_path = None
+            thumb_url = state.get("thumb_url")
+            if thumb_url:
+                try:
+                    r = requests.get(thumb_url, stream=True, timeout=10)
+                    r.raise_for_status()
+                    job_thumb_path = f"yt_thumb_direct_{user_id}.jpg"
+                    with open(job_thumb_path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=1024 * 8):
+                            if not chunk:
+                                continue
+                            f.write(chunk)
+                except Exception:
+                    job_thumb_path = None
+
             try:
                 path, downloaded_bytes = await download_direct_with_progress(
                     state["url"], state["filename"], progress_msg
                 )
             except Exception as e:
                 await msg.edit_text(f"❌ Direct download fail: `{e}`")
-                fname = state.get("filename", "")
-                if fname and os.path.exists(fname):
-                    try:
-                        os.remove(fname)
-                    except Exception:
-                        pass
+                if job_thumb_path and os.path.exists(job_thumb_path):
+                    os.remove(job_thumb_path)
                 if user_id in PENDING_DOWNLOAD:
                     del PENDING_DOWNLOAD[user_id]
                 return
@@ -813,6 +846,8 @@ def register_url_handlers(app: Client):
                     os.remove(path)
                 except Exception:
                     pass
+                if job_thumb_path and os.path.exists(job_thumb_path):
+                    os.remove(job_thumb_path)
                 if user_id in PENDING_DOWNLOAD:
                     del PENDING_DOWNLOAD[user_id]
                 return
@@ -826,12 +861,16 @@ def register_url_handlers(app: Client):
                     os.remove(path)
                 except Exception:
                     pass
+                if job_thumb_path and os.path.exists(job_thumb_path):
+                    os.remove(job_thumb_path)
                 if user_id in PENDING_DOWNLOAD:
                     del PENDING_DOWNLOAD[user_id]
                 return
 
             update_stats(downloaded=downloaded_bytes, uploaded=0)
-            await upload_with_thumb_and_progress(client, msg, path, user_id, progress_msg)
+            await upload_with_thumb_and_progress(
+                client, msg, path, user_id, progress_msg, job_thumb_path=job_thumb_path
+            )
             if user_id in PENDING_DOWNLOAD:
                 del PENDING_DOWNLOAD[user_id]
             try:
@@ -840,6 +879,7 @@ def register_url_handlers(app: Client):
                 pass
             return
 
+        # -------- fmt_<id> (quality select) ----------
         if data.startswith("fmt_"):
             fmt_id = data.split("_", 1)[1]
 
@@ -893,6 +933,7 @@ def register_url_handlers(app: Client):
                 del PENDING_DOWNLOAD[user_id]
                 return
 
+            # YT / site original thumbnail – final upload ke liye
             job_thumb_path = None
             thumb_url = state.get("thumb_url")
             if thumb_url:
