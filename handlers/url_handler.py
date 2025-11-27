@@ -49,7 +49,6 @@ def safe_filename(name: str) -> str:
 
 
 def is_ytdlp_site(url: str) -> bool:
-    # yt-dlp bohot saari sites support karta hai, isliye sab pe try
     return True
 
 
@@ -131,14 +130,10 @@ def register_url_handlers(app: Client):
         # =========================
         state = PENDING_DOWNLOAD.get(user_id)
         if state and state.get("mode") == "await_new_name":
-            # Agar user ne URL bhej diya → purana job cancel, is URL ko naya job mano
             if re.search(URL_REGEX, text):
                 del PENDING_DOWNLOAD[user_id]
-                # niche normal URL handling chalega
             else:
                 new_name = safe_filename(text)
-
-                # extension ensure karo
                 orig_filename = state.get("filename") or state.get("title") or "video.mp4"
                 _, orig_ext = os.path.splitext(orig_filename)
                 if "." not in new_name:
@@ -150,7 +145,6 @@ def register_url_handlers(app: Client):
                 state["custom_name"] = new_name
                 state["filename"] = new_name
 
-                # yt-dlp case → ab quality select
                 if state["type"] == "yt":
                     formats = state["formats"]
                     txt = (
@@ -169,7 +163,6 @@ def register_url_handlers(app: Client):
                         pass
                     return
 
-                # direct link case → ab direct download
                 if state["type"] == "direct":
                     url = state["url"]
                     filename = state["filename"]
@@ -220,7 +213,6 @@ def register_url_handlers(app: Client):
         url_candidate, custom_name = split_url_and_name(text)
         match = re.search(URL_REGEX, url_candidate)
         if not match:
-            # URL nahi → koi reply nahi
             return
 
         url = match.group(0)
@@ -283,7 +275,7 @@ def register_url_handlers(app: Client):
                 )
                 return
 
-        # ========= 2.1 yt-dlp TRY =========
+        # ========= yt-dlp TRY =========
         try:
             formats, info = get_formats(url) if is_ytdlp_site(url) else ([], None)
         except Exception:
@@ -341,7 +333,7 @@ def register_url_handlers(app: Client):
             )
             return
 
-        # ========= 2.2 DIRECT FILE MODE =========
+        # ========= DIRECT FILE MODE =========
         await wait_msg.edit_text("🌐 Direct file download mode...")
 
         filename = head_fname or url.split("/")[-1] or "file"
@@ -351,7 +343,6 @@ def register_url_handlers(app: Client):
             filename = custom_name
         filename = safe_filename(filename)
 
-        # HTML / webpage block
         ctype_lower = (head_ctype or "").lower()
         if ctype_lower.startswith("text/html") and not is_video_ext(filename):
             await wait_msg.edit_text(
@@ -400,7 +391,6 @@ def register_url_handlers(app: Client):
         chat_id = msg.chat.id
         user_id = query.from_user.id
 
-        # try to ack quickly (avoid silent callback failures)
         try:
             await query.answer()
         except Exception:
@@ -499,13 +489,20 @@ def register_url_handlers(app: Client):
                     )
                     await msg.reply_text("🖼 Thumbnail options:", reply_markup=kb)
                 else:
-                    try:
-                        await query.answer(
-                            "Thumbnail set nahi hai.\nSet karne ke liye kisi photo par reply karke `/setthumb` bhejo.",
-                            show_alert=True,
-                        )
-                    except Exception:
-                        pass
+                    kb = InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    "📸 Set Thumbnail", callback_data="thumb_set"
+                                )
+                            ]
+                        ]
+                    )
+                    await msg.reply_text(
+                        "🖼 Aapne abhi koi thumbnail set nahi kiya hai.\n"
+                        "Neeche button se set karne ka tarika dekho:",
+                        reply_markup=kb,
+                    )
                 try:
                     await react_message(client, msg, "settings")
                 except Exception:
@@ -528,13 +525,20 @@ def register_url_handlers(app: Client):
                     )
                     await msg.reply_text("📝 Caption options:", reply_markup=kb)
                 else:
-                    try:
-                        await query.answer(
-                            "Caption set nahi hai.\nSet karne ke liye `/setcaption mera caption {file_name}` use karo.",
-                            show_alert=True,
-                        )
-                    except Exception:
-                        pass
+                    kb = InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    "📝 Set Caption", callback_data="caption_set"
+                                )
+                            ]
+                        ]
+                    )
+                    await msg.reply_text(
+                        "📝 Aapne abhi koi caption set nahi kiya hai.\n"
+                        "Neeche button se set karne ka tarika dekho:",
+                        reply_markup=kb,
+                    )
                 try:
                     await react_message(client, msg, "settings")
                 except Exception:
@@ -543,16 +547,49 @@ def register_url_handlers(app: Client):
 
             return
 
-        # Thumbnail submenu
+        # Thumbnail submenu extra actions
+        if data == "thumb_set":
+            await msg.reply_text(
+                "📸 Thumbnail set karne ke liye kisi **photo par reply** karke `/setthumb` bhejo."
+            )
+            try:
+                await react_message(client, msg, "settings")
+            except Exception:
+                pass
+            return
+
         if data == "thumb_view":
             user = get_user_doc(user_id)
             if not user.get("thumb_file_id"):
                 await msg.reply_text("❌ Aapne koi thumbnail set nahi kiya hai.")
                 return
+            kb = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔁 Change", callback_data="thumb_change"
+                        ),
+                        InlineKeyboardButton(
+                            "🗑 Delete", callback_data="thumb_delete"
+                        ),
+                    ]
+                ]
+            )
             await client.send_photo(
                 chat_id=chat_id,
                 photo=user["thumb_file_id"],
                 caption="🖼 Ye aapka current thumbnail hai.",
+                reply_markup=kb,
+            )
+            try:
+                await react_message(client, msg, "settings")
+            except Exception:
+                pass
+            return
+
+        if data == "thumb_change":
+            await msg.reply_text(
+                "🔁 Naya thumbnail set karne ke liye kisi **photo par reply** karke `/setthumb` bhejo."
             )
             try:
                 await react_message(client, msg, "settings")
@@ -569,14 +606,47 @@ def register_url_handlers(app: Client):
                 pass
             return
 
-        # Caption submenu
+        # Caption submenu extra
+        if data == "caption_set":
+            await msg.reply_text(
+                "📝 Caption set karne ke liye `/setcaption mera caption {file_name}` use karo.\n"
+                "Example: `/setcaption 🔥 Best Video {file_name}`"
+            )
+            try:
+                await react_message(client, msg, "settings")
+            except Exception:
+                pass
+            return
+
         if data == "caption_view":
             user = get_user_doc(user_id)
             cap = user.get("caption")
             if not cap:
                 await msg.reply_text("❌ Aapne koi caption set nahi kiya hai.")
                 return
-            await msg.reply_text(f"📝 Current caption:\n\n`{cap}`")
+            kb = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔁 Change", callback_data="caption_change"
+                        ),
+                        InlineKeyboardButton(
+                            "🗑 Delete", callback_data="caption_delete"
+                        ),
+                    ]
+                ]
+            )
+            await msg.reply_text(f"📝 Current caption:\n\n`{cap}`", reply_markup=kb)
+            try:
+                await react_message(client, msg, "settings")
+            except Exception:
+                pass
+            return
+
+        if data == "caption_change":
+            await msg.reply_text(
+                "🔁 Naya caption set karne ke liye `/setcaption mera naya caption {file_name}` bhejo."
+            )
             try:
                 await react_message(client, msg, "settings")
             except Exception:
@@ -621,7 +691,6 @@ def register_url_handlers(app: Client):
         if limit_s and limit_s > 0:
             remaining_size = max(limit_s - used_s, 0)
 
-        # -------- name_default ----------
         if data == "name_default":
             if state["type"] == "yt":
                 formats = state["formats"]
@@ -696,7 +765,6 @@ def register_url_handlers(app: Client):
                         del PENDING_DOWNLOAD[user_id]
                 return
 
-        # -------- name_rename ----------
         if data == "name_rename":
             state["mode"] = "await_new_name"
             prompt = await msg.reply_text(
@@ -710,7 +778,6 @@ def register_url_handlers(app: Client):
                 pass
             return
 
-        # -------- direct_dl ----------
         if data == "direct_dl":
             try:
                 await query.answer("Direct download try ho raha hai...", show_alert=False)
@@ -773,7 +840,6 @@ def register_url_handlers(app: Client):
                 pass
             return
 
-        # -------- fmt_<id> (quality select) ----------
         if data.startswith("fmt_"):
             fmt_id = data.split("_", 1)[1]
 
