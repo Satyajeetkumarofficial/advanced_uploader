@@ -1,10 +1,10 @@
 import os
 
-API_ID = int(os.getenv("API_ID", "123456"))
-API_HASH = os.getenv("API_HASH", "your_api_hash")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "your_bot_token")
+API_ID = int(os.getenv("API_ID", "25617967"))
+API_HASH = os.getenv("API_HASH", "10555bea1cdfc7d2303fc13b7fd187cc")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8090736841:AAEi5FkCzBhccIU8RbZBxmPTDq2V7a2c4UE")
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://manishak4251:EXfIp5PR2kqBLU3x@cluster0.cqfxq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 
 # DEFAULT LIMITS (0 = unlimited)
 DEFAULT_DAILY_COUNT_LIMIT = int(os.getenv("DEFAULT_DAILY_COUNT_LIMIT", "10"))
@@ -26,12 +26,12 @@ MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # bytes
 
 # Admin user IDs (comma separated in env: "123,456")
 ADMIN_IDS = [
-    int(x) for x in os.getenv("ADMINS", "").split(",") if x.strip().isdigit()
+    int(x) for x in os.getenv("ADMINS", "7413682152").split(",") if x.strip().isdigit()
 ]
 
-LOG_CHANNEL = int(os.getenv("LOG_CHANNEL", "0"))  # -100...
+LOG_CHANNEL = int(os.getenv("LOG_CHANNEL", "-1002256697098"))  # -100...
 
-BOT_USERNAME = os.getenv("BOT_USERNAME", "MyUploaderBot")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "ProDemooBot")
 
 # Proxy support (optional)
 PROXY_URL = os.getenv("PROXY_URL", "").strip()
