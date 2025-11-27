@@ -25,15 +25,17 @@ from utils.uploader import upload_with_thumb_and_progress
 from utils.progress import human_readable
 from config import MAX_FILE_SIZE, NORMAL_COOLDOWN_SECONDS
 from handlers.start import help_text, help_keyboard, about_text
+from utils.forcesub import ensure_forcesub
+from utils.reactions import pick_reaction
+
 
 URL_REGEX = r"https?://[^\s]+"
 
-# chat_id -> state dict
+# per-user state
 PENDING_DOWNLOAD: dict[int, dict] = {}
 
 
 def split_url_and_name(text: str):
-    """Split 'URL | new_name.ext' format."""
     parts = text.split("|", 1)
     url_part = parts[0].strip()
     custom_name = parts[1].strip() if len(parts) > 1 else None
@@ -41,18 +43,16 @@ def split_url_and_name(text: str):
 
 
 def safe_filename(name: str) -> str:
-    """Remove invalid characters from filename."""
     name = "".join(c for c in name if c not in "\\/:*?\"<>|")
     return name or "file"
 
 
 def is_ytdlp_site(url: str) -> bool:
-    """Abhi ke liye sab URLs ko yt-dlp ke through try kar rahe hain."""
+    # yt-dlp bohot saari sites support karta hai, isliye sab pe try
     return True
 
 
 def build_quality_keyboard(formats):
-    """Formats list se inline keyboard bana do."""
     buttons = []
     for f in formats:
         h = f["height"] or "?"
@@ -111,103 +111,121 @@ def register_url_handlers(app: Client):
         )
     )
     async def handle_url(client: Client, message: Message):
-        chat_id = message.chat.id
         user_id = message.from_user.id
 
         if is_banned(user_id):
             return
 
+        if not await ensure_forcesub(client, message):
+            return
+
         user = get_user_doc(user_id)
 
-        # 1️⃣ RENAME MODE – user ne rename button ke baad naya naam bheja
-        state = PENDING_DOWNLOAD.get(chat_id)
+        # rename mode?
+        state = PENDING_DOWNLOAD.get(user_id)
         if state and state.get("mode") == "await_new_name":
-            new_name = message.text.strip()
-            if re.search(URL_REGEX, new_name):
-                await message.reply_text(
-                    "❗ Abhi rename mode me ho.\n"
-                    "Naya file name bhejo, example: `my_video.mp4`",
-                    quote=True,
-                )
-                return
-
-            new_name = safe_filename(new_name)
-            if not new_name:
-                await message.reply_text(
-                    "❗ Sahi file name bhejo, example: `my_video.mp4`",
-                    quote=True,
-                )
-                return
-
-            state["custom_name"] = new_name
-            state["filename"] = new_name
-
-            # YT / streaming case – ab quality select karni hai
-            if state["type"] == "yt":
-                formats = state["formats"]
-                text = (
-                    "✅ File name set ho gaya.\n\n"
-                    f"📄 File: `{state['filename']}`\n\n"
-                    "🎥 Ab quality select karo:"
-                )
-                await message.reply_text(
-                    text, reply_markup=build_quality_keyboard(formats)
-                )
-                state["mode"] = "await_quality"
-                return
-
-            # Direct URL case – rename ke baad direct download
-            if state["type"] == "direct":
-                url = state["url"]
-                filename = state["filename"]
-                head_size = state.get("head_size", 0)
-
-                if head_size > 0 and head_size > MAX_FILE_SIZE:
+            if (
+                message.reply_to_message
+                and message.reply_to_message.id == state.get("rename_prompt_msg_id")
+            ):
+                new_name = message.text.strip()
+                if re.search(URL_REGEX, new_name):
                     await message.reply_text(
-                        f"⛔ File Telegram limit se badi hai.\n"
-                        f"Size: {human_readable(head_size)}"
+                        "❗ Abhi rename mode me ho.\n"
+                        "Naya file name bhejo, example: `my_video.mp4`",
+                        quote=True,
                     )
-                    del PENDING_DOWNLOAD[chat_id]
                     return
 
-                progress_msg = await message.reply_text("⬇️ Downloading...")
-                try:
-                    path, downloaded_bytes = await download_direct_with_progress(
-                        url, filename, progress_msg
+                new_name = safe_filename(new_name)
+                if not new_name:
+                    await message.reply_text(
+                        "❗ Sahi file name bhejo, example: `my_video.mp4`",
+                        quote=True,
                     )
-                    file_size = os.path.getsize(path)
-                    if file_size > MAX_FILE_SIZE:
+                    return
+
+                state["custom_name"] = new_name
+                state["filename"] = new_name
+
+                if state["type"] == "yt":
+                    formats = state["formats"]
+                    text = (
+                        "✅ File name set ho gaya.\n\n"
+                        f"📄 File: `{state['filename']}`\n\n"
+                        "🎥 Ab quality select karo:"
+                    )
+                    await message.reply_text(
+                        text, reply_markup=build_quality_keyboard(formats)
+                    )
+                    state["mode"] = "await_quality"
+                    try:
+                        await message.react(pick_reaction("rename"))
+                    except Exception:
+                        pass
+                    return
+
+                if state["type"] == "direct":
+                    url = state["url"]
+                    filename = state["filename"]
+                    head_size = state.get("head_size", 0)
+
+                    if head_size > 0 and head_size > MAX_FILE_SIZE:
                         await message.reply_text(
-                            "❌ File Telegram limit se badi hai, upload nahi ho sakti."
+                            f"⛔ File Telegram limit se badi hai.\n"
+                            f"Size: {human_readable(head_size)}"
                         )
-                        os.remove(path)
-                        del PENDING_DOWNLOAD[chat_id]
+                        del PENDING_DOWNLOAD[user_id]
                         return
 
-                    update_stats(downloaded=downloaded_bytes, uploaded=0)
+                    progress_msg = await message.reply_text("⬇️ Downloading...")
+                    try:
+                        path, downloaded_bytes = await download_direct_with_progress(
+                            url, filename, progress_msg
+                        )
+                        file_size = os.path.getsize(path)
+                        if file_size > MAX_FILE_SIZE:
+                            await message.reply_text(
+                                "❌ File Telegram limit se badi hai, upload nahi ho sakti."
+                            )
+                            os.remove(path)
+                            del PENDING_DOWNLOAD[user_id]
+                            return
 
-                    await upload_with_thumb_and_progress(
-                        client, message, path, user_id, progress_msg
-                    )
-                except Exception as e:
-                    await message.reply_text(f"❌ Error: `{e}`")
-                finally:
-                    if chat_id in PENDING_DOWNLOAD:
-                        del PENDING_DOWNLOAD[chat_id]
-                return
+                        update_stats(downloaded=downloaded_bytes, uploaded=0)
 
-        # 2️⃣ NORMAL MODE – naya URL aaya hai
+                        await upload_with_thumb_and_progress(
+                            client, message, path, user_id, progress_msg
+                        )
+                        try:
+                            await message.react(pick_reaction("success"))
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        await message.reply_text(f"❌ Error: `{e}`")
+                    finally:
+                        if user_id in PENDING_DOWNLOAD:
+                            del PENDING_DOWNLOAD[user_id]
+                    return
+            # else: naya normal URL treat hoga
 
+        # naya URL
         text = message.text.strip()
         url_candidate, custom_name = split_url_and_name(text)
         match = re.search(URL_REGEX, url_candidate)
         if not match:
-            # URL nahi hai → bot silent (koi reply nahi)
+            # URL nahi → koi reply nahi
             return
 
         url = match.group(0)
 
-        # Cooldown (normal users only)
+        # random URL reaction
+        try:
+            await message.react(pick_reaction("url"))
+        except Exception:
+            pass
+
+        # cooldown
         if not user.get("is_premium", False) and NORMAL_COOLDOWN_SECONDS > 0:
             last_ts = user.get("last_upload_ts") or 0
             now = time.time()
@@ -226,7 +244,6 @@ def register_url_handlers(app: Client):
                 )
                 return
 
-        # Daily limits
         limit_c = user["daily_count_limit"]
         limit_s = user["daily_size_limit"]
         used_c = user["used_count_today"]
@@ -264,13 +281,12 @@ def register_url_handlers(app: Client):
                 )
                 return
 
-        # yt-dlp try (YouTube / streaming / reel etc.)
+        # pehle yt-dlp se sab types video/stream try
         try:
             formats, info = get_formats(url) if is_ytdlp_site(url) else ([], None)
         except Exception:
             formats, info = [], None
 
-        # yt-dlp case (quality selection)
         if formats:
             title = info.get("title", head_fname or "video")
 
@@ -290,7 +306,7 @@ def register_url_handlers(app: Client):
 
             thumb_url = info.get("thumbnail")
 
-            PENDING_DOWNLOAD[chat_id] = {
+            PENDING_DOWNLOAD[user_id] = {
                 "type": "yt",
                 "url": url,
                 "user_id": user_id,
@@ -323,7 +339,7 @@ def register_url_handlers(app: Client):
             )
             return
 
-        # Direct file case (yt-dlp formats nahi mile)
+        # direct file
         await wait_msg.edit_text("🌐 Direct file download mode...")
 
         filename = head_fname or url.split("/")[-1] or "file"
@@ -333,7 +349,7 @@ def register_url_handlers(app: Client):
             filename = custom_name
         filename = safe_filename(filename)
 
-        PENDING_DOWNLOAD[chat_id] = {
+        PENDING_DOWNLOAD[user_id] = {
             "type": "direct",
             "url": url,
             "user_id": user_id,
@@ -364,11 +380,11 @@ def register_url_handlers(app: Client):
     @app.on_callback_query()
     async def callbacks(client: Client, query):
         data = query.data
-        chat_id = query.message.chat.id
-        user_id = query.from_user.id
         msg = query.message
+        chat_id = msg.chat.id
+        user_id = query.from_user.id
 
-        # 0️⃣ GENERAL HELP / ABOUT / SETTINGS TOGGLES (NO DOWNLOAD STATE NEEDED)
+        # HELP / ABOUT
         if data == "open_help":
             await query.answer()
             await msg.reply_text(
@@ -376,6 +392,10 @@ def register_url_handlers(app: Client):
                 reply_markup=help_keyboard(),
                 disable_web_page_preview=True,
             )
+            try:
+                await msg.react(pick_reaction("help"))
+            except Exception:
+                pass
             return
 
         if data == "open_about":
@@ -384,8 +404,13 @@ def register_url_handlers(app: Client):
                 about_text(),
                 disable_web_page_preview=True,
             )
+            try:
+                await msg.react(pick_reaction("help"))
+            except Exception:
+                pass
             return
 
+        # SETTINGS (help-menu buttons)
         if data.startswith("settings_"):
             user = get_user_doc(user_id)
 
@@ -396,6 +421,10 @@ def register_url_handlers(app: Client):
                     "📸 Screenshots: ON" if new_val else "📸 Screenshots: OFF",
                     show_alert=True,
                 )
+                try:
+                    await msg.react(pick_reaction("settings"))
+                except Exception:
+                    pass
                 return
 
             if data == "settings_sample":
@@ -405,6 +434,10 @@ def register_url_handlers(app: Client):
                     "🎬 Sample: ON" if new_val else "🎬 Sample: OFF",
                     show_alert=True,
                 )
+                try:
+                    await msg.react(pick_reaction("settings"))
+                except Exception:
+                    pass
                 return
 
             if data == "settings_upload":
@@ -415,40 +448,128 @@ def register_url_handlers(app: Client):
                     f"🎞 Upload type: {new_type.upper()}",
                     show_alert=True,
                 )
+                try:
+                    await msg.react(pick_reaction("settings"))
+                except Exception:
+                    pass
                 return
 
             if data == "settings_thumb":
                 if user.get("thumb_file_id"):
-                    set_thumb(user_id, None)
-                    await query.answer(
-                        "🖼 Thumbnail OFF (delete ho gaya).",
-                        show_alert=True,
+                    kb = InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    "👁 View", callback_data="thumb_view"
+                                ),
+                                InlineKeyboardButton(
+                                    "🗑 Delete", callback_data="thumb_delete"
+                                ),
+                            ]
+                        ]
+                    )
+                    await query.answer()
+                    await msg.reply_text(
+                        "🖼 Thumbnail options:", reply_markup=kb
                     )
                 else:
                     await query.answer(
-                        "🖼 Thumbnail ON karne ke liye kis photo par reply karke `/setthumb` bhejo.",
+                        "Thumbnail set nahi hai.\nSet karne ke liye kisi photo par reply karke `/setthumb` bhejo.",
                         show_alert=True,
                     )
+                try:
+                    await msg.react(pick_reaction("settings"))
+                except Exception:
+                    pass
                 return
 
             if data == "settings_caption":
                 if user.get("caption"):
-                    set_caption(user_id, None)
-                    await query.answer(
-                        "📝 Caption OFF (delete ho gaya).",
-                        show_alert=True,
+                    kb = InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    "👁 View", callback_data="caption_view"
+                                ),
+                                InlineKeyboardButton(
+                                    "🗑 Delete", callback_data="caption_delete"
+                                ),
+                            ]
+                        ]
+                    )
+                    await query.answer()
+                    await msg.reply_text(
+                        "📝 Caption options:", reply_markup=kb
                     )
                 else:
                     await query.answer(
-                        "📝 Caption ON karne ke liye `/setcaption mera caption {file_name}` use karo.",
+                        "Caption set nahi hai.\nSet karne ke liye `/setcaption mera caption {file_name}` use karo.",
                         show_alert=True,
                     )
+                try:
+                    await msg.react(pick_reaction("settings"))
+                except Exception:
+                    pass
                 return
 
-            return  # any settings_ done
+            return
 
-        # 1️⃣ Download-related callbacks (require state)
-        state = PENDING_DOWNLOAD.get(chat_id)
+        # Thumbnail submenu
+        if data == "thumb_view":
+            await query.answer()
+            user = get_user_doc(user_id)
+            if not user.get("thumb_file_id"):
+                await msg.reply_text("❌ Aapne koi thumbnail set nahi kiya hai.")
+                return
+            await client.send_photo(
+                chat_id=chat_id,
+                photo=user["thumb_file_id"],
+                caption="🖼 Ye aapka current thumbnail hai.",
+            )
+            try:
+                await msg.react(pick_reaction("settings"))
+            except Exception:
+                pass
+            return
+
+        if data == "thumb_delete":
+            await query.answer("Thumbnail delete ho gaya.", show_alert=True)
+            set_thumb(user_id, None)
+            await msg.reply_text("✅ Thumbnail delete ho gaya.")
+            try:
+                await msg.react(pick_reaction("settings"))
+            except Exception:
+                pass
+            return
+
+        # Caption submenu
+        if data == "caption_view":
+            await query.answer()
+            user = get_user_doc(user_id)
+            cap = user.get("caption")
+            if not cap:
+                await msg.reply_text("❌ Aapne koi caption set nahi kiya hai.")
+                return
+            await msg.reply_text(f"📝 Current caption:\n\n`{cap}`")
+            try:
+                await msg.react(pick_reaction("settings"))
+            except Exception:
+                pass
+            return
+
+        if data == "caption_delete":
+            await query.answer("Caption delete ho gaya.", show_alert=True)
+            set_caption(user_id, None)
+            await msg.reply_text("✅ Caption delete ho gaya.")
+            try:
+                await msg.react(pick_reaction("settings"))
+            except Exception:
+                pass
+            return
+
+        # Niche se download-related callbacks
+
+        state = PENDING_DOWNLOAD.get(user_id)
         if not state:
             await query.answer("⏱ Time out. Dubara URL bhejo.", show_alert=True)
             return
@@ -467,18 +588,16 @@ def register_url_handlers(app: Client):
             await msg.edit_text(
                 f"⛔ Count limit exceed: {used_c}/{limit_c}\n" "Dubara kal try karo."
             )
-            del PENDING_DOWNLOAD[chat_id]
+            del PENDING_DOWNLOAD[user_id]
             return
 
         remaining_size = None
         if limit_s and limit_s > 0:
             remaining_size = max(limit_s - used_s, 0)
 
-        # Name selection step
         if data == "name_default":
             await query.answer("Default file name use hoga.", show_alert=False)
 
-            # YT / streaming case
             if state["type"] == "yt":
                 formats = state["formats"]
                 await msg.edit_text(
@@ -488,23 +607,26 @@ def register_url_handlers(app: Client):
                     reply_markup=build_quality_keyboard(formats),
                 )
                 state["mode"] = "await_quality"
+                try:
+                    await msg.react(pick_reaction("settings"))
+                except Exception:
+                    pass
                 return
 
-            # Direct file case
             if state["type"] == "direct":
                 if head_size > 0 and head_size > MAX_FILE_SIZE:
                     await msg.edit_text(
                         f"⛔ File Telegram limit se badi hai.\n"
                         f"Size: {human_readable(head_size)}"
                     )
-                    del PENDING_DOWNLOAD[chat_id]
+                    del PENDING_DOWNLOAD[user_id]
                     return
                 if remaining_size is not None and head_size > 0 and head_size > remaining_size:
                     await msg.edit_text(
                         "⛔ Daily size limit exceed ho jayega is file se.\n"
                         f"Remain: {human_readable(remaining_size)}, File: {human_readable(head_size)}"
                     )
-                    del PENDING_DOWNLOAD[chat_id]
+                    del PENDING_DOWNLOAD[user_id]
                     return
 
                 progress_msg = await msg.edit_text("⬇️ Downloading...")
@@ -518,7 +640,7 @@ def register_url_handlers(app: Client):
                             "❌ File Telegram limit se badi hai, upload nahi ho sakti."
                         )
                         os.remove(path)
-                        del PENDING_DOWNLOAD[chat_id]
+                        del PENDING_DOWNLOAD[user_id]
                         return
 
                     if remaining_size is not None and file_size > remaining_size:
@@ -527,30 +649,38 @@ def register_url_handlers(app: Client):
                             f"Remain: {human_readable(remaining_size)}, File: {human_readable(file_size)}"
                         )
                         os.remove(path)
-                        del PENDING_DOWNLOAD[chat_id]
+                        del PENDING_DOWNLOAD[user_id]
                         return
 
                     update_stats(downloaded=downloaded_bytes, uploaded=0)
                     await upload_with_thumb_and_progress(
                         client, msg, path, user_id, progress_msg
                     )
+                    try:
+                        await msg.react(pick_reaction("success"))
+                    except Exception:
+                        pass
                 except Exception as e:
                     await msg.edit_text(f"❌ Error: `{e}`")
                 finally:
-                    if chat_id in PENDING_DOWNLOAD:
-                        del PENDING_DOWNLOAD[chat_id]
+                    if user_id in PENDING_DOWNLOAD:
+                        del PENDING_DOWNLOAD[user_id]
                 return
 
         if data == "name_rename":
             await query.answer("Naya file name bhejo (ext ke sath).", show_alert=True)
             state["mode"] = "await_new_name"
-            await msg.reply_text(
+            prompt = await msg.reply_text(
                 "✏ Naya file name bhejo (extension ke sath),\n"
                 "example: `my_video.mp4`"
             )
+            state["rename_prompt_msg_id"] = prompt.id
+            try:
+                await msg.react(pick_reaction("rename"))
+            except Exception:
+                pass
             return
 
-        # Direct download fallback button (yt-dlp se dikkat ho to)
         if data == "direct_dl":
             await query.answer("Direct download try ho raha hai...", show_alert=False)
             progress_msg = await msg.edit_text("⬇️ Direct download try ho raha hai...")
@@ -562,14 +692,14 @@ def register_url_handlers(app: Client):
                 await msg.edit_text(f"❌ Direct download fail: `{e}`")
                 if os.path.exists(filename):
                     os.remove(filename)
-                del PENDING_DOWNLOAD[chat_id]
+                del PENDING_DOWNLOAD[user_id]
                 return
 
             file_size = os.path.getsize(path)
             if file_size > MAX_FILE_SIZE:
                 await msg.edit_text("❌ File Telegram limit se badi hai, upload nahi ho sakti.")
                 os.remove(path)
-                del PENDING_DOWNLOAD[chat_id]
+                del PENDING_DOWNLOAD[user_id]
                 return
 
             if remaining_size is not None and file_size > remaining_size:
@@ -578,17 +708,20 @@ def register_url_handlers(app: Client):
                     f"Remain: {human_readable(remaining_size)}, File: {human_readable(file_size)}"
                 )
                 os.remove(path)
-                del PENDING_DOWNLOAD[chat_id]
+                del PENDING_DOWNLOAD[user_id]
                 return
 
             update_stats(downloaded=downloaded_bytes, uploaded=0)
             await upload_with_thumb_and_progress(
                 client, msg, path, user_id, progress_msg
             )
-            del PENDING_DOWNLOAD[chat_id]
+            del PENDING_DOWNLOAD[user_id]
+            try:
+                await msg.react(pick_reaction("success"))
+            except Exception:
+                pass
             return
 
-        # Format selection (fmt_xxx) – YT / streaming quality
         if data.startswith("fmt_"):
             fmt_id = data.split("_", 1)[1]
             await query.answer(f"Format: {fmt_id}", show_alert=False)
@@ -605,7 +738,7 @@ def register_url_handlers(app: Client):
                     "⛔ Daily size limit exceed ho sakta hai is quality se.\n"
                     f"Remain: {human_readable(remaining_size)}, Format: {human_readable(fmt_size)}"
                 )
-                del PENDING_DOWNLOAD[chat_id]
+                del PENDING_DOWNLOAD[user_id]
                 return
 
             await msg.edit_text(
@@ -624,14 +757,14 @@ def register_url_handlers(app: Client):
                 await msg.edit_text(f"❌ yt-dlp download fail: `{e}`")
                 if os.path.exists(tmp_name):
                     os.remove(tmp_name)
-                del PENDING_DOWNLOAD[chat_id]
+                del PENDING_DOWNLOAD[user_id]
                 return
 
             file_size = os.path.getsize(path)
             if file_size > MAX_FILE_SIZE:
                 await msg.edit_text("❌ File Telegram limit se badi hai, upload nahi ho sakti.")
                 os.remove(path)
-                del PENDING_DOWNLOAD[chat_id]
+                del PENDING_DOWNLOAD[user_id]
                 return
 
             if remaining_size is not None and file_size > remaining_size:
@@ -640,17 +773,16 @@ def register_url_handlers(app: Client):
                     f"Remain: {human_readable(remaining_size)}, File: {human_readable(file_size)}"
                 )
                 os.remove(path)
-                del PENDING_DOWNLOAD[chat_id]
+                del PENDING_DOWNLOAD[user_id]
                 return
 
-            # YouTube / yt-dlp thumbnail download
             job_thumb_path = None
             thumb_url = state.get("thumb_url")
             if thumb_url:
                 try:
                     r = requests.get(thumb_url, stream=True, timeout=10)
                     r.raise_for_status()
-                    job_thumb_path = f"yt_thumb_{chat_id}.jpg"
+                    job_thumb_path = f"yt_thumb_{user_id}.jpg"
                     with open(job_thumb_path, "wb") as f:
                         for chunk in r.iter_content(chunk_size=1024 * 8):
                             if not chunk:
@@ -671,5 +803,9 @@ def register_url_handlers(app: Client):
                 job_thumb_path=job_thumb_path,
             )
 
-            del PENDING_DOWNLOAD[chat_id]
+            del PENDING_DOWNLOAD[user_id]
+            try:
+                await msg.react(pick_reaction("success"))
+            except Exception:
+                pass
             return
