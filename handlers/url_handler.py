@@ -535,6 +535,7 @@ def register_url_handlers(app: Client):
         if data.startswith("settings_"):
             user = get_user_doc(user_id)
 
+            # 📸 Screenshots ON / OFF
             if data == "settings_screens":
                 new_val = not bool(user.get("send_screenshots"))
                 set_screenshots(user_id, new_val)
@@ -559,6 +560,7 @@ def register_url_handlers(app: Client):
                     pass
                 return
 
+            # 🎬 Sample video ON / OFF
             if data == "settings_sample":
                 new_val = not bool(user.get("send_sample"))
                 # duration None rehne do, user /setsample se set kare
@@ -584,13 +586,31 @@ def register_url_handlers(app: Client):
                     pass
                 return
 
+            # 🎞 Upload type toggle (VIDEO / DOCUMENT)
             if data == "settings_upload":
                 cur = user.get("upload_type", "video")
                 new_type = "document" if cur == "video" else "video"
                 set_upload_type(user_id, new_type)
+
+                if new_type == "video":
+                    status_txt = (
+                        "🎞 Upload type ab **VIDEO** hai.\n"
+                        "Ab files Telegram me **video ke roop me** jayengi "
+                        "(duration + thumbnail ke saath, streamable)."
+                    )
+                    pretty = "VIDEO (streamable)"
+                else:
+                    status_txt = (
+                        "📄 Upload type ab **DOCUMENT** hai.\n"
+                        "Ab files Telegram me **document file** ke roop me jayengi."
+                    )
+                    pretty = "DOCUMENT (file)"
+
+                await msg.reply_text(status_txt, disable_web_page_preview=True)
+
                 try:
                     await query.answer(
-                        f"🎞 Upload type: {new_type.upper()}",
+                        f"🎞 Upload type: {pretty}",
                         show_alert=False,
                     )
                 except Exception:
@@ -601,6 +621,7 @@ def register_url_handlers(app: Client):
                     pass
                 return
 
+            # 🖼 Thumbnail settings entry
             if data == "settings_thumb":
                 if user.get("thumb_file_id"):
                     kb = InlineKeyboardMarkup(
@@ -637,6 +658,7 @@ def register_url_handlers(app: Client):
                     pass
                 return
 
+            # 📝 Caption settings entry
             if data == "settings_caption":
                 if user.get("caption"):
                     kb = InlineKeyboardMarkup(
