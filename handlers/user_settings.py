@@ -13,13 +13,18 @@ from database import (
     set_sample,
 )
 from utils.uploader import upload_with_thumb_and_progress
+from utils.forcesub import ensure_forcesub
+from utils.reactions import pick_reaction
 
 
 def register_user_settings_handlers(app: Client):
-    @app.on_message(filters.command("setthumb"))
-    async def setthumb_cmd(_, message: Message):
+    @app.on_message(filters.command("setthumb") & filters.private)
+    async def setthumb_cmd(client: Client, message: Message):
         if is_banned(message.from_user.id):
             return
+        if not await ensure_forcesub(client, message):
+            return
+
         if not message.reply_to_message or not message.reply_to_message.photo:
             await message.reply_text(
                 "📸 Thumbnail set karne ke liye kisi **photo par reply** karke `/setthumb` bhejo."
@@ -29,18 +34,31 @@ def register_user_settings_handlers(app: Client):
         file_id = photo.file_id
         set_thumb(message.from_user.id, file_id)
         await message.reply_text("✅ Thumbnail save ho gaya.")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("delthumb"))
-    async def delthumb_cmd(_, message: Message):
+    @app.on_message(filters.command("delthumb") & filters.private)
+    async def delthumb_cmd(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+        if not await ensure_forcesub(client, message):
             return
         set_thumb(message.from_user.id, None)
         await message.reply_text("✅ Thumbnail hata diya gaya.")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("showthumb"))
+    @app.on_message(filters.command("showthumb") & filters.private)
     async def showthumb_cmd(app_: Client, message: Message):
         if is_banned(message.from_user.id):
             return
+        if not await ensure_forcesub(app_, message):
+            return
+
         user = get_user_doc(message.from_user.id)
         if not user.get("thumb_file_id"):
             await message.reply_text("❌ Aapne koi thumbnail set nahi kiya hai.")
@@ -50,11 +68,18 @@ def register_user_settings_handlers(app: Client):
             photo=user["thumb_file_id"],
             caption="🖼 Ye aapka current thumbnail hai.",
         )
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("setcaption"))
-    async def setcaption_cmd(_, message: Message):
+    @app.on_message(filters.command("setcaption") & filters.private)
+    async def setcaption_cmd(client: Client, message: Message):
         if is_banned(message.from_user.id):
             return
+        if not await ensure_forcesub(client, message):
+            return
+
         if len(message.text.split(maxsplit=1)) < 2:
             await message.reply_text(
                 "Usage:\n`/setcaption mera naya caption {file_name}`\n\n"
@@ -64,29 +89,50 @@ def register_user_settings_handlers(app: Client):
         caption = message.text.split(maxsplit=1)[1]
         set_caption(message.from_user.id, caption)
         await message.reply_text("✅ Caption save ho gaya.")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("delcaption"))
-    async def delcaption_cmd(_, message: Message):
+    @app.on_message(filters.command("delcaption") & filters.private)
+    async def delcaption_cmd(client: Client, message: Message):
         if is_banned(message.from_user.id):
             return
+        if not await ensure_forcesub(client, message):
+            return
+
         set_caption(message.from_user.id, None)
         await message.reply_text("✅ Custom caption hata diya gaya.")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("showcaption"))
-    async def showcaption_cmd(_, message: Message):
+    @app.on_message(filters.command("showcaption") & filters.private)
+    async def showcaption_cmd(client: Client, message: Message):
         if is_banned(message.from_user.id):
             return
+        if not await ensure_forcesub(client, message):
+            return
+
         user = get_user_doc(message.from_user.id)
         cap = user.get("caption")
         if not cap:
             await message.reply_text("❌ Aapne koi caption set nahi kiya hai.")
             return
         await message.reply_text(f"📝 Current caption:\n\n`{cap}`")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("myplan"))
-    async def myplan_cmd(_, message: Message):
+    @app.on_message(filters.command("myplan") & filters.private)
+    async def myplan_cmd(client: Client, message: Message):
         if is_banned(message.from_user.id):
             return
+        if not await ensure_forcesub(client, message):
+            return
+
         user = get_user_doc(message.from_user.id)
         limit_c = user.get("daily_count_limit", 0)
         limit_s = user.get("daily_size_limit", 0)
@@ -115,52 +161,94 @@ def register_user_settings_handlers(app: Client):
             f"Upload type: **{user.get('upload_type', 'video')}**"
         )
         await message.reply_text(text)
+        try:
+            await message.react(pick_reaction("help"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("spoiler_on"))
-    async def spoiler_on(_, message: Message):
+    @app.on_message(filters.command("spoiler_on") & filters.private)
+    async def spoiler_on(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+        if not await ensure_forcesub(client, message):
             return
         set_spoiler(message.from_user.id, True)
         await message.reply_text("✅ Spoiler effect ON.")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("spoiler_off"))
-    async def spoiler_off(_, message: Message):
+    @app.on_message(filters.command("spoiler_off") & filters.private)
+    async def spoiler_off(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+        if not await ensure_forcesub(client, message):
             return
         set_spoiler(message.from_user.id, False)
         await message.reply_text("✅ Spoiler effect OFF.")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("screens_on"))
-    async def screens_on(_, message: Message):
+    @app.on_message(filters.command("screens_on") & filters.private)
+    async def screens_on(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+        if not await ensure_forcesub(client, message):
             return
         set_screenshots(message.from_user.id, True)
         await message.reply_text("✅ Video screenshots ON (3 snaps per video).")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("screens_off"))
-    async def screens_off(_, message: Message):
+    @app.on_message(filters.command("screens_off") & filters.private)
+    async def screens_off(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+        if not await ensure_forcesub(client, message):
             return
         set_screenshots(message.from_user.id, False)
         await message.reply_text("✅ Video screenshots OFF.")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("sample_on"))
-    async def sample_on(_, message: Message):
+    @app.on_message(filters.command("sample_on") & filters.private)
+    async def sample_on(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+        if not await ensure_forcesub(client, message):
             return
         set_sample(message.from_user.id, True, None)
         await message.reply_text("✅ Sample clip ON (default 15s).")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("sample_off"))
-    async def sample_off(_, message: Message):
+    @app.on_message(filters.command("sample_off") & filters.private)
+    async def sample_off(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+        if not await ensure_forcesub(client, message):
             return
         set_sample(message.from_user.id, False, None)
         await message.reply_text("✅ Sample clip OFF.")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("setsample"))
-    async def set_sample_duration(_, message: Message):
+    @app.on_message(filters.command("setsample") & filters.private)
+    async def set_sample_duration(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+        if not await ensure_forcesub(client, message):
             return
         parts = message.text.split()
         if len(parts) < 2 or not parts[1].isdigit():
@@ -174,10 +262,16 @@ def register_user_settings_handlers(app: Client):
             return
         set_sample(message.from_user.id, True, sec)
         await message.reply_text(f"✅ Sample clip ON & duration set to {sec}s.")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("setprefix"))
-    async def setprefix_cmd(_, message: Message):
+    @app.on_message(filters.command("setprefix") & filters.private)
+    async def setprefix_cmd(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+        if not await ensure_forcesub(client, message):
             return
         if len(message.text.split(maxsplit=1)) < 2:
             await message.reply_text("Usage: `/setprefix [text_]`")
@@ -185,10 +279,16 @@ def register_user_settings_handlers(app: Client):
         txt = message.text.split(maxsplit=1)[1]
         set_prefix(message.from_user.id, txt)
         await message.reply_text(f"✅ Prefix set: `{txt}`")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    @app.on_message(filters.command("setsuffix"))
-    async def setsuffix_cmd(_, message: Message):
+    @app.on_message(filters.command("setsuffix") & filters.private)
+    async def setsuffix_cmd(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+        if not await ensure_forcesub(client, message):
             return
         if len(message.text.split(maxsplit=1)) < 2:
             await message.reply_text("Usage: `/setsuffix [_text]`")
@@ -196,12 +296,18 @@ def register_user_settings_handlers(app: Client):
         txt = message.text.split(maxsplit=1)[1]
         set_suffix(message.from_user.id, txt)
         await message.reply_text(f"✅ Suffix set: `{txt}`")
+        try:
+            await message.react(pick_reaction("settings"))
+        except Exception:
+            pass
 
-    # Telegram file/video rename & reupload
-    @app.on_message(filters.command("rename"))
+    @app.on_message(filters.command("rename") & filters.private)
     async def rename_cmd(app_: Client, message: Message):
         if is_banned(message.from_user.id):
             return
+        if not await ensure_forcesub(app_, message):
+            return
+
         if not message.reply_to_message or not (
             message.reply_to_message.document or message.reply_to_message.video
         ):
@@ -231,3 +337,7 @@ def register_user_settings_handlers(app: Client):
             app_, message, new_path, message.from_user.id, progress_msg
         )
         await status.delete()
+        try:
+            await message.react(pick_reaction("rename"))
+        except Exception:
+            pass
