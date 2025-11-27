@@ -31,7 +31,8 @@ async def upload_with_thumb_and_progress(
     suffix = user.get("suffix") or ""
     final_name = f"{prefix}{base_name}{suffix}"
 
-    upload_type = user.get("upload_type", "video")
+    # 👇 Ab yahi decide karega – VIDEO ya DOCUMENT
+    upload_type = user.get("upload_type", "video")  # "video" / "document"
 
     caption_template = user.get("caption")
     if caption_template:
@@ -58,7 +59,7 @@ async def upload_with_thumb_and_progress(
 
     spoiler_flag = bool(user.get("spoiler"))
 
-    # Screenshots album
+    # 📸 Screenshots album (sirf jab file video-type ho)
     if user.get("send_screenshots") and is_video_ext(path):
         from_dir = f"screens_{user_id}"
         shots = generate_screenshots(path, out_dir=from_dir, count=3)
@@ -91,7 +92,7 @@ async def upload_with_thumb_and_progress(
                 except Exception:
                     pass
 
-    # Sample clip
+    # 🎬 Sample clip (sirf video files)
     if user.get("send_sample") and is_video_ext(path):
         sample_duration = int(user.get("sample_duration") or 15)
         sample_path = f"sample_{user_id}.mp4"
@@ -136,17 +137,29 @@ async def upload_with_thumb_and_progress(
 
     sent = None
     try:
-        # MAIN UPLOAD
-        if is_video_ext(path) and upload_type == "video":
-            sent = await app.send_video(
-                chat_id=message.chat.id,
-                video=path,
-                file_name=final_name,
-                caption=caption,
-                thumb=thumb_path,
-                has_spoiler=spoiler_flag,
-                progress=upload_progress,
-            )
+        # ⚙️ Yahan se main change:
+        # Agar upload_type == "video" → hamesha send_video try karo
+        # warna send_document
+        if upload_type == "video":
+            try:
+                sent = await app.send_video(
+                    chat_id=message.chat.id,
+                    video=path,
+                    file_name=final_name,
+                    caption=caption,
+                    thumb=thumb_path,
+                    has_spoiler=spoiler_flag,
+                    progress=upload_progress,
+                )
+            except Exception:
+                # agar kisi wajah se video fail ho jaye to fallback document
+                sent = await app.send_document(
+                    chat_id=message.chat.id,
+                    document=path,
+                    file_name=final_name,
+                    caption=caption,
+                    progress=upload_progress,
+                )
         else:
             sent = await app.send_document(
                 chat_id=message.chat.id,
@@ -156,6 +169,7 @@ async def upload_with_thumb_and_progress(
                 progress=upload_progress,
             )
 
+        # usage + stats update
         increment_usage(user_id, file_size)
         update_stats(downloaded=0, uploaded=file_size)
 
@@ -181,7 +195,7 @@ async def upload_with_thumb_and_progress(
             f"File size: {human_readable(file_size)}"
         )
 
-        # Log channel text + media copy
+        # Log channel
         if LOG_CHANNEL != 0:
             try:
                 text = (
