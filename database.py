@@ -86,7 +86,6 @@ def get_user_doc(user_id: int):
         users_col.insert_one(user)
         return user
 
-    # Daily reset
     if user.get("last_date") != t:
         users_col.update_one(
             {"_id": user["_id"]},
@@ -100,7 +99,6 @@ def get_user_doc(user_id: int):
         user["used_size_today"] = 0
         user["last_date"] = t
 
-    # Ensure keys exist (for old docs)
     user.setdefault("is_premium", False)
     user.setdefault("daily_count_limit", DEFAULT_DAILY_COUNT_LIMIT)
     user.setdefault("daily_size_limit", mb_to_bytes(DEFAULT_DAILY_SIZE_LIMIT_MB))
@@ -250,4 +248,4 @@ def get_stats():
         "downloaded": s.get("downloaded_bytes", 0),
         "uploaded": s.get("uploaded_bytes", 0),
         "jobs": s.get("total_jobs", 0),
-      }
+        }
