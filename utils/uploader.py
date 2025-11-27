@@ -5,7 +5,7 @@ from pyrogram.types import Message, InputMediaPhoto
 
 from utils.progress import edit_progress_message, human_readable
 from utils.downloader import is_video_ext
-from utils.media_tools import generate_screenshots, generate_sample_clip
+from utils.media_tools import generate_screenshots, generate_sample_clip, get_media_duration
 from config import MAX_FILE_SIZE, LOG_CHANNEL, PROGRESS_UPDATE_INTERVAL
 from database import get_user_doc, increment_usage, update_stats
 
@@ -144,20 +144,29 @@ async def upload_with_thumb_and_progress(
             eta,
         )
 
+    # 🔢 Duration detect (0:00 fix)
+    duration = None
+    if upload_type == "video" and is_video_ext(path):
+        duration = get_media_duration(path)
+
     sent = None
     try:
         if upload_type == "video":
+            video_kwargs = dict(
+                chat_id=message.chat.id,
+                video=path,
+                file_name=final_name,
+                caption=caption,
+                thumb=thumb_path,
+                has_spoiler=spoiler_flag,
+                supports_streaming=True,
+                progress=upload_progress,
+            )
+            if duration:
+                video_kwargs["duration"] = duration
+
             try:
-                sent = await app.send_video(
-                    chat_id=message.chat.id,
-                    video=path,
-                    file_name=final_name,
-                    caption=caption,
-                    thumb=thumb_path,
-                    has_spoiler=spoiler_flag,
-                    supports_streaming=True,
-                    progress=upload_progress,
-                )
+                sent = await app.send_video(**video_kwargs)
             except Exception:
                 # Agar video upload fail ho (codec/ffmpeg issue) to document fallback
                 sent = await app.send_document(
