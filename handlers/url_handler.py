@@ -20,6 +20,7 @@ from utils.downloader import (
     download_direct_with_progress,
     download_with_ytdlp,
     head_info,
+    is_video_ext,
 )
 from utils.uploader import upload_with_thumb_and_progress
 from utils.progress import human_readable
@@ -121,42 +122,44 @@ def register_url_handlers(app: Client):
 
         user = get_user_doc(user_id)
 
-        # rename mode?
+        text = message.text.strip()
+
+        # =========================
+        # 1) Rename name mode (URL flow)
+        # =========================
         state = PENDING_DOWNLOAD.get(user_id)
         if state and state.get("mode") == "await_new_name":
-            if (
-                message.reply_to_message
-                and message.reply_to_message.id == state.get("rename_prompt_msg_id")
-            ):
-                new_name = message.text.strip()
-                if re.search(URL_REGEX, new_name):
-                    await message.reply_text(
-                        "❗ Abhi rename mode me ho.\n"
-                        "Naya file name bhejo, example: `my_video.mp4`",
-                        quote=True,
-                    )
-                    return
-
+            # agar user ne URL hi bhej diya to isko naya job maan lo
+            if re.search(URL_REGEX, text):
+                # purana pending job cancel
+                del PENDING_DOWNLOAD[user_id]
+                # neeche normal URL handling chalega
+            else:
+                new_name = text
                 new_name = safe_filename(new_name)
-                if not new_name:
-                    await message.reply_text(
-                        "❗ Sahi file name bhejo, example: `my_video.mp4`",
-                        quote=True,
-                    )
-                    return
+
+                # extension ensure karo
+                orig_filename = state.get("filename") or state.get("title") or "video.mp4"
+                _, orig_ext = os.path.splitext(orig_filename)
+                if "." not in new_name:
+                    if orig_ext:
+                        new_name = new_name + orig_ext
+                    else:
+                        new_name = new_name + ".mp4"
 
                 state["custom_name"] = new_name
                 state["filename"] = new_name
 
+                # yt-dlp wale case me ab quality choose
                 if state["type"] == "yt":
                     formats = state["formats"]
-                    text = (
+                    text_msg = (
                         "✅ File name set ho gaya.\n\n"
                         f"📄 File: `{state['filename']}`\n\n"
                         "🎥 Ab quality select karo:"
                     )
                     await message.reply_text(
-                        text, reply_markup=build_quality_keyboard(formats)
+                        text_msg, reply_markup=build_quality_keyboard(formats)
                     )
                     state["mode"] = "await_quality"
                     try:
@@ -165,6 +168,7 @@ def register_url_handlers(app: Client):
                         pass
                     return
 
+                # direct link wale case me abhi turant download
                 if state["type"] == "direct":
                     url = state["url"]
                     filename = state["filename"]
@@ -207,10 +211,10 @@ def register_url_handlers(app: Client):
                         if user_id in PENDING_DOWNLOAD:
                             del PENDING_DOWNLOAD[user_id]
                     return
-            # else: naya normal URL treat hoga
 
-        # naya URL
-        text = message.text.strip()
+        # =========================
+        # 2) Normal URL handling
+        # =========================
         url_candidate, custom_name = split_url_and_name(text)
         match = re.search(URL_REGEX, url_candidate)
         if not match:
@@ -219,7 +223,6 @@ def register_url_handlers(app: Client):
 
         url = match.group(0)
 
-        # random URL reaction
         try:
             await message.react(pick_reaction("url"))
         except Exception:
@@ -287,6 +290,7 @@ def register_url_handlers(app: Client):
         except Exception:
             formats, info = [], None
 
+        # ========= YT-DLP SUCCESS =========
         if formats:
             title = info.get("title", head_fname or "video")
 
@@ -339,7 +343,7 @@ def register_url_handlers(app: Client):
             )
             return
 
-        # direct file
+        # ========= DIRECT FILE MODE =========
         await wait_msg.edit_text("🌐 Direct file download mode...")
 
         filename = head_fname or url.split("/")[-1] or "file"
@@ -348,6 +352,20 @@ def register_url_handlers(app: Client):
         if custom_name:
             filename = custom_name
         filename = safe_filename(filename)
+
+        # HTML / pure webpage block
+        ctype_lower = (head_ctype or "").lower()
+        if (
+            ctype_lower.startswith("text/html")
+            and not is_video_ext(filename)
+        ):
+            await wait_msg.edit_text(
+                "❌ Is URL par sirf **HTML/webpage** mila.\n"
+                "Koi direct video/file link detect nahi hua.\n\n"
+                "👉 Agar ye streaming site hai to direct player link ya supported "
+                "URL try karo (YT, Insta, reel, mp4, m3u8, etc.)."
+            )
+            return
 
         PENDING_DOWNLOAD[user_id] = {
             "type": "direct",
