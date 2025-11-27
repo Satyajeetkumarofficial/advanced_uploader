@@ -152,7 +152,7 @@ def register_url_handlers(app: Client):
         if not message.photo:
             return
 
-        photo = message.photo[-1]
+        photo = message.photo
         file_id = photo.file_id
 
         # DB me save karo
