@@ -237,7 +237,9 @@ def register_url_handlers(app: Client):
                 del PENDING_DOWNLOAD[user_id]
             else:
                 new_name = safe_filename(text)
-                orig_filename = state.get("filename") or state.get("title") or "video.mp4"
+                orig_filename = (
+                    state.get("filename") or state.get("title") or "video.mp4"
+                )
                 _, orig_ext = os.path.splitext(orig_filename)
                 if "." not in new_name:
                     if orig_ext:
@@ -389,7 +391,11 @@ def register_url_handlers(app: Client):
             formats, info = [], None
 
         if formats:
-            title = info.get("title", head_fname or "video") if info else (head_fname or "video")
+            title = (
+                info.get("title", head_fname or "video")
+                if info
+                else (head_fname or "video")
+            )
 
             filtered = []
             for f in formats:
@@ -701,8 +707,8 @@ def register_url_handlers(app: Client):
         if data == "thumb_set":
             THUMB_PENDING[user_id] = True
             await msg.reply_text(
-                "📸 Thumbnail set karne ke liye ab koi **photo bhejo**.\n"
-                "Jo agla photo bhejoge, wahi thumbnail save ho jayega."
+                "📸 Thumbnail set karne ke liye ab koi **photo bhejo**.\n\n"
+                "⚠️ Jo **agla photo** bhejoge, wahi thumbnail ban jayega."
             )
             try:
                 await react_message(client, msg, "settings")
@@ -742,8 +748,8 @@ def register_url_handlers(app: Client):
         if data == "thumb_change":
             THUMB_PENDING[user_id] = True
             await msg.reply_text(
-                "🔁 Naya thumbnail set karne ke liye ab koi **photo bhejo**.\n"
-                "Jo agla photo bhejoge, wahi naya thumbnail ban jayega."
+                "🔁 Naya thumbnail set karne ke liye ab koi **photo bhejo**.\n\n"
+                "⚠️ Jo **agla photo** bhejoge, wahi naya thumbnail ban jayega."
             )
             try:
                 await react_message(client, msg, "settings")
