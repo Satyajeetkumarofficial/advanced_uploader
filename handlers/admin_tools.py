@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -7,10 +9,15 @@ from database import (
     users_col,
     get_users_count,
 )
-from datetime import datetime
 
 
 def register_admin_tools_handlers(app: Client):
+    """
+    Yahan sab admin-only helper commands register ho rahe hain:
+      - /refresh_user <user_id>
+      - /refresh_all_users
+      - /total_users
+    """
 
     # ====================================
     #      SINGLE USER REFRESH
@@ -19,16 +26,21 @@ def register_admin_tools_handlers(app: Client):
     async def refresh_user_handler(client: Client, message: Message):
         """
         /refresh_user <user_id>
-        Ek user ka daily usage reset karega.
+        -> Ek user ka daily usage reset karega.
         """
         try:
             if len(message.command) < 2:
                 return await message.reply_text("⚠️ Usage: /refresh_user user_id")
 
-            user_id = int(message.command[1])
+            try:
+                user_id = int(message.command[1])
+            except ValueError:
+                return await message.reply_text("❌ Invalid user_id. Sirf numbers bhejo.")
 
-            # ensure user exists
+            # ensure user exists (agar nahi hai to create ho jayega)
             get_user_doc(user_id)
+
+            today = datetime.utcnow().strftime("%Y-%m-%d")
 
             users_col.update_one(
                 {"user_id": user_id},
@@ -36,7 +48,7 @@ def register_admin_tools_handlers(app: Client):
                     "$set": {
                         "used_count_today": 0,
                         "used_size_today": 0,
-                        "last_date": datetime.utcnow().strftime("%Y-%m-%d"),
+                        "last_date": today,
                     }
                 },
             )
@@ -56,7 +68,7 @@ def register_admin_tools_handlers(app: Client):
     async def refresh_all_users_handler(client: Client, message: Message):
         """
         /refresh_all_users
-        Sabhi users ka daily usage reset karega.
+        -> Sabhi users ka daily usage reset karega.
         """
         try:
             today = datetime.utcnow().strftime("%Y-%m-%d")
@@ -73,9 +85,8 @@ def register_admin_tools_handlers(app: Client):
             )
 
             await message.reply_text(
-                "🔄 *All Users Refreshed Successfully*\n"
-                f"✔️ Total Updated Users: `{result.modified_count}`",
-                parse_mode="markdown",
+                "🔄 All users refreshed successfully.\n"
+                f"✔️ Total updated users: {result.modified_count}"
             )
 
         except Exception as e:
@@ -88,13 +99,12 @@ def register_admin_tools_handlers(app: Client):
     async def total_users_handler(client: Client, message: Message):
         """
         /total_users
-        Total registered users count show karega.
+        -> Total registered users count show karega.
         """
         try:
             total = get_users_count()
             await message.reply_text(
-                f"👥 *Total Registered Users:* `{total}`",
-                parse_mode="markdown",
+                f"👥 Total registered users: {total}"
             )
         except Exception as e:
             await message.reply_text(f"❌ Error: `{e}`")
