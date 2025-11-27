@@ -3,6 +3,8 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from database import get_user_doc, is_banned
 from config import BOT_USERNAME
 from utils.progress import human_readable
+from utils.forcesub import ensure_forcesub
+from utils.reactions import pick_reaction
 
 
 def help_keyboard():
@@ -18,10 +20,10 @@ def help_keyboard():
                 InlineKeyboardButton("🎞 Upload: Video/Doc", callback_data="settings_upload"),
             ],
             [
-                InlineKeyboardButton("🖼 Thumbnail ON/OFF", callback_data="settings_thumb"),
+                InlineKeyboardButton("🖼 Thumbnail", callback_data="settings_thumb"),
             ],
             [
-                InlineKeyboardButton("📝 Caption ON/OFF", callback_data="settings_caption"),
+                InlineKeyboardButton("📝 Caption", callback_data="settings_caption"),
             ],
         ]
     )
@@ -40,7 +42,7 @@ def help_text():
         "• Thumbnail, caption, spoiler, screenshots album, sample clip\n"
         "• Daily count + size limit, premium system, cooldown\n"
         "• Upload type: Video ya Document (URL se aaya file)\n\n"
-        "🎛 Neeche buttons se quick settings toggle kar sakte ho."
+        "🎛 Neeche buttons se quick settings toggle / manage kar sakte ho."
     )
 
 
@@ -60,9 +62,12 @@ def about_text():
 
 
 def register_start_handlers(app: Client):
-    @app.on_message(filters.command("start"))
-    async def start_cmd(_, message: Message):
+    @app.on_message(filters.command("start") & filters.private)
+    async def start_cmd(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+
+        if not await ensure_forcesub(client, message):
             return
 
         user = get_user_doc(message.from_user.id)
@@ -108,13 +113,25 @@ def register_start_handlers(app: Client):
             reply_markup=kb,
         )
 
-    @app.on_message(filters.command("help"))
-    async def help_cmd(_, message: Message):
+        try:
+            await message.react(pick_reaction("start"))
+        except Exception:
+            pass
+
+    @app.on_message(filters.command("help") & filters.private)
+    async def help_cmd(client: Client, message: Message):
         if is_banned(message.from_user.id):
+            return
+
+        if not await ensure_forcesub(client, message):
             return
 
         await message.reply_text(
             help_text(),
             reply_markup=help_keyboard(),
             disable_web_page_preview=True,
-              )
+        )
+        try:
+            await message.react(pick_reaction("help"))
+        except Exception:
+            pass
