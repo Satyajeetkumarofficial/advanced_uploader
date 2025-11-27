@@ -113,6 +113,7 @@ async def upload_with_thumb_and_progress(
                     caption=f"🎬 Sample clip ({sample_duration}s)",
                     thumb=thumb_path,
                     has_spoiler=spoiler_flag,
+                    supports_streaming=True,
                 )
             except Exception:
                 pass
@@ -154,6 +155,7 @@ async def upload_with_thumb_and_progress(
                     caption=caption,
                     thumb=thumb_path,
                     has_spoiler=spoiler_flag,
+                    supports_streaming=True,
                     progress=upload_progress,
                 )
             except Exception:
