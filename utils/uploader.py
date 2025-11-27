@@ -5,7 +5,12 @@ from pyrogram.types import Message, InputMediaPhoto
 
 from utils.progress import edit_progress_message, human_readable
 from utils.downloader import is_video_ext
-from utils.media_tools import generate_screenshots, generate_sample_clip, get_media_duration
+from utils.media_tools import (
+    generate_screenshots,
+    generate_sample_clip,
+    get_media_duration,
+    generate_thumbnail_frame,
+)
 from config import MAX_FILE_SIZE, LOG_CHANNEL, PROGRESS_UPDATE_INTERVAL
 from database import get_user_doc, increment_usage, update_stats
 
@@ -42,7 +47,7 @@ async def upload_with_thumb_and_progress(
     # Thumbnail priority:
     # 1) job_thumb_path (YouTube / yt-dlp)
     # 2) user ka permanent thumb
-    # 3) agar upload_type == "video" & file video hai → auto frame se thumb
+    # 3) auto frame from video (middle frame)
     thumb_path = None
     thumb_downloaded_path = None
     auto_thumb_dir = None
@@ -61,16 +66,20 @@ async def upload_with_thumb_and_progress(
     # AUTO THUMB (agar abhi bhi thumb nahi hai aur video file hai)
     if thumb_path is None and upload_type == "video" and is_video_ext(path):
         auto_thumb_dir = f"auto_thumb_{user_id}"
-        shots = generate_screenshots(path, out_dir=auto_thumb_dir, count=1)
-        if shots:
-            thumb_path = shots[0]
+        os.makedirs(auto_thumb_dir, exist_ok=True)
+        auto_thumb = os.path.join(auto_thumb_dir, "thumb.jpg")
+        thumb_file = generate_thumbnail_frame(path, auto_thumb)
+        if thumb_file and os.path.exists(thumb_file):
+            thumb_path = thumb_file
+        else:
+            auto_thumb_dir = None  # kuch nahi bana, cleanup skip
 
     spoiler_flag = bool(user.get("spoiler"))
 
-    # 📸 Screenshots album (sirf jab file video-type ho)
+    # 📸 Screenshots album (sirf video ke liye, 6 shots)
     if user.get("send_screenshots") and is_video_ext(path):
         from_dir = f"screens_{user_id}"
-        shots = generate_screenshots(path, out_dir=from_dir, count=3)
+        shots = generate_screenshots(path, out_dir=from_dir, count=6)
         if shots:
             media = []
             for i, s in enumerate(shots):
@@ -121,7 +130,8 @@ async def upload_with_thumb_and_progress(
                 if os.path.exists(sample):
                     os.remove(sample)
 
-    await message.reply_text("📤 Upload start ho raha hai...")
+    # ❌ extra reply nahi, sirf progress_msg ko hi edit karenge
+    # await message.reply_text("📤 Upload start ho raha hai...")
 
     start_time = time.time()
     last_edit = start_time
@@ -168,7 +178,7 @@ async def upload_with_thumb_and_progress(
             try:
                 sent = await app.send_video(**video_kwargs)
             except Exception:
-                # Agar video upload fail ho (codec/ffmpeg issue) to document fallback
+                # Agar video upload fail ho (codec issue) to document fallback
                 sent = await app.send_document(
                     chat_id=message.chat.id,
                     document=path,
