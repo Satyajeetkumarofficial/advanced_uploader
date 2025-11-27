@@ -55,11 +55,36 @@ def _guess_extension_from_type(content_type: str | None) -> str | None:
     return ext
 
 
+def normalize_url(url: str) -> str:
+    """
+    Kuch special URLs (jaise facebook share links) ko
+    final redirect URL me convert karta hai.
+    Example:
+      https://www.facebook.com/share/r/...  ->  real video URL
+    """
+    try:
+        lower = url.lower()
+        if "facebook.com/share/" in lower:
+            resp = requests.get(
+                url,
+                allow_redirects=True,
+                timeout=10,
+                headers={"User-Agent": USER_AGENT},
+                proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None,
+            )
+            return resp.url or url
+    except Exception:
+        pass
+    return url
+
+
 def head_info(url: str) -> tuple[int, str | None, str | None]:
     """
     Do a HEAD request to get Content-Length, Content-Type, filename (if possible).
     Returns: (size_in_bytes_or_0, content_type_or_None, suggested_filename_or_None)
     """
+    url = normalize_url(url)
+
     size = 0
     ctype = None
     filename = None
@@ -271,6 +296,7 @@ def get_formats(url: str) -> tuple[list[dict], dict]:
     Returns (formats_list, full_info_dict)
     Each format item: {format_id, ext, height, filesize}
     """
+    url = normalize_url(url)
     ydl_opts = _build_ydl_opts(url, outtmpl="NA", download=False)
     parsed = urlparse(url)
     host = (parsed.netloc or "").lower()
@@ -323,6 +349,7 @@ def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
     If fmt_id is None => use bestvideo+bestaudio/best
     Returns final downloaded file path.
     """
+    url = normalize_url(url)
     parsed = urlparse(url)
     host = (parsed.netloc or "").lower()
 
@@ -362,6 +389,8 @@ async def download_direct_with_progress(url: str, filename: str, progress_msg):
     Direct HTTP(S) download using aiohttp with telegram message progress.
     Returns (local_path, total_downloaded_bytes)
     """
+    url = normalize_url(url)
+
     # safe filename
     filename = filename or "file_from_url"
     local_path = os.path.join(".", filename)
