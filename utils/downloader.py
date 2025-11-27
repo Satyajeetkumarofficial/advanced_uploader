@@ -234,7 +234,6 @@ def _build_ydl_opts(
 
     # ---------- Google Drive ----------
     if "drive.google.com" in host:
-        # yt-dlp khud handle karega; public ya “anyone with link” links par best effort
         ydl_opts.setdefault("extractor_args", {})
         ydl_opts["extractor_args"]["gdrive"] = {
             "skip_drive_warning": True,
@@ -273,9 +272,26 @@ def get_formats(url: str) -> tuple[list[dict], dict]:
     Each format item: {format_id, ext, height, filesize}
     """
     ydl_opts = _build_ydl_opts(url, outtmpl="NA", download=False)
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
 
-    with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    try:
+        # Pehla try: normal extractor
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        # Agar Facebook hai to generic extractor se fallback try karein
+        if "facebook.com" in host or "fb.watch" in url:
+            fallback_opts = ydl_opts.copy()
+            fallback_opts["force_generic_extractor"] = True
+            fallback_opts["extract_flat"] = False
+            fallback_opts.pop("extractor_args", None)
+
+            with YoutubeDL(fallback_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        else:
+            # koi aur site hai to normal error throw kar do
+            raise e
 
     formats = info.get("formats", []) or []
 
@@ -307,6 +323,9 @@ def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
     If fmt_id is None => use bestvideo+bestaudio/best
     Returns final downloaded file path.
     """
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
+
     ydl_opts = _build_ydl_opts(
         url,
         outtmpl=tmp_name,
@@ -314,10 +333,22 @@ def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
         fmt=fmt_id,
     )
 
-    with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        # Dinamically resolved filename (yt-dlp may append extension)
-        real_path = ydl.prepare_filename(info)
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            real_path = ydl.prepare_filename(info)
+    except Exception as e:
+        if "facebook.com" in host or "fb.watch" in url:
+            fallback_opts = ydl_opts.copy()
+            fallback_opts["force_generic_extractor"] = True
+            fallback_opts["extract_flat"] = False
+            fallback_opts.pop("extractor_args", None)
+
+            with YoutubeDL(fallback_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                real_path = ydl.prepare_filename(info)
+        else:
+            raise e
 
     return real_path
 
@@ -344,7 +375,6 @@ async def download_direct_with_progress(url: str, filename: str, progress_msg):
 
     connector_kwargs = {}
     if PROXY_URL:
-        # aiohttp me proxy session ke andar handle karenge
         connector_kwargs["ssl"] = False  # kuch proxies me SSL issue aa sakta hai
 
     async with aiohttp.ClientSession(
