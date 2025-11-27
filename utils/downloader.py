@@ -353,12 +353,20 @@ def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
     parsed = urlparse(url)
     host = (parsed.netloc or "").lower()
 
+    # Base options
     ydl_opts = _build_ydl_opts(
         url,
         outtmpl=tmp_name,
         download=True,
         fmt=fmt_id,
     )
+
+    # ❌ Long title ko filename banne se roko
+    # Humesha sirf short template hi use hoga, jaise: temp_ytdlp_video.mp4
+    safe_tmpl = tmp_name or "temp_ytdlp_video"
+    ydl_opts["outtmpl"] = safe_tmpl + ".%(ext)s"
+    ydl_opts["restrictfilenames"] = True      # special chars hata dega
+    ydl_opts["trim_file_name"] = 80           # agar kahin title aa bhi gaya to max 80 char
 
     try:
         with YoutubeDL(ydl_opts) as ydl:
