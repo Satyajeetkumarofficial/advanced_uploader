@@ -1,131 +1,440 @@
-import time
 import os
+import math
+import mimetypes
+import time
+from urllib.parse import urlparse
+
+import aiohttp
 import requests
 from yt_dlp import YoutubeDL
-from pyrogram.types import Message
 
-from config import MAX_FILE_SIZE, PROXIES, PROXY_URL, COOKIES_FILE, PROGRESS_UPDATE_INTERVAL
-from utils.progress import edit_progress_message
+from utils.progress import human_readable
 
 
-def human_filename_from_cd(cd_header: str | None) -> str | None:
-    if not cd_header:
+# ==========================================
+#   BASIC HELPERS
+# ==========================================
+
+VIDEO_EXTS = [
+    ".mp4", ".mkv", ".mov", ".webm", ".flv", ".avi", ".m4v",
+    ".3gp", ".ts", ".m2ts", ".ogv"
+]
+
+AUDIO_EXTS = [
+    ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".wav"
+]
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+COOKIES_FILE = os.getenv("COOKIES_FILE", "cookies.txt")
+PROXY_URL = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY") or None  # optional proxy
+
+
+def is_video_ext(filename: str) -> bool:
+    """
+    Simple extension check to detect video-like files.
+    Used to avoid uploading pure HTML pages or unknown blobs.
+    """
+    name = (filename or "").lower()
+    for ext in VIDEO_EXTS + [".m3u8"]:
+        if name.endswith(ext):
+            return True
+    return False
+
+
+def _guess_extension_from_type(content_type: str | None) -> str | None:
+    if not content_type:
         return None
-    if "filename=" not in cd_header:
+    ext = mimetypes.guess_extension(content_type.split(";")[0].strip())
+    if not ext:
         return None
-    part = cd_header.split("filename=", 1)[1]
-    if ";" in part:
-        part = part.split(";", 1)[0]
-    return part.strip().strip('"').strip("'")
+    return ext
 
 
-def head_info(url: str, timeout: int = 10):
+def head_info(url: str) -> tuple[int, str | None, str | None]:
+    """
+    Do a HEAD request to get Content-Length, Content-Type, filename (if possible).
+    Returns: (size_in_bytes_or_0, content_type_or_None, suggested_filename_or_None)
+    """
+    size = 0
+    ctype = None
+    filename = None
+
     try:
-        r = requests.head(
+        resp = requests.head(
             url,
             allow_redirects=True,
-            timeout=timeout,
-            proxies=PROXIES,
+            timeout=10,
+            headers={"User-Agent": USER_AGENT},
+            proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None,
         )
-        size = int(r.headers.get("content-length", 0) or 0)
-        ctype = r.headers.get("content-type", "") or ""
-        cd = r.headers.get("content-disposition", "") or ""
-        filename = human_filename_from_cd(cd)
-        return size, ctype, filename
+        if resp.status_code >= 400:
+            # kuch servers HEAD ko allow nahi karte, GET se try
+            resp = requests.get(
+                url,
+                stream=True,
+                timeout=10,
+                headers={"User-Agent": USER_AGENT},
+                proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None,
+            )
+        ctype = resp.headers.get("Content-Type")
+
+        cl = resp.headers.get("Content-Length")
+        if cl and cl.isdigit():
+            size = int(cl)
+
+        cd = resp.headers.get("Content-Disposition")
+        if cd and "filename=" in cd:
+            # Content-Disposition: attachment; filename="abc.mp4"
+            part = cd.split("filename=")[-1].strip().strip('"')
+            filename = part
+        else:
+            # path se guess
+            parsed = urlparse(resp.url)
+            base = os.path.basename(parsed.path)
+            if base:
+                filename = base
+
+        # Agar filename missing aur content-type video ho
+        if not filename and ctype:
+            ext = _guess_extension_from_type(ctype)
+            if ext:
+                filename = "file" + ext
+
     except Exception:
-        return 0, "", None
+        pass
+
+    return size, ctype, filename
 
 
-def is_video_ext(name: str) -> bool:
-    ext = name.lower()
-    return ext.endswith((".mp4", ".mkv", ".avi", ".mov", ".webm"))
+# ==========================================
+#   YT-DLP POWERED DOWNLOADER
+# ==========================================
 
+def _build_ydl_opts(
+    url: str,
+    outtmpl: str,
+    download: bool,
+    fmt: str | None = None,
+) -> dict:
+    """
+    Common yt-dlp options builder.
+    Special handling for popular sites.
+    """
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
 
-async def download_direct_with_progress(url: str, path: str, progress_msg: Message):
-    start_time = time.time()
-    with requests.get(url, stream=True, proxies=PROXIES) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        downloaded = 0
-        last_edit = start_time
-
-        with open(path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                if not chunk:
-                    continue
-                f.write(chunk)
-                downloaded += len(chunk)
-                now = time.time()
-                if now - last_edit >= PROGRESS_UPDATE_INTERVAL:
-                    elapsed = now - start_time
-                    speed = downloaded / elapsed if elapsed > 0 else 0
-                    eta = (total - downloaded) / speed if speed > 0 and total > 0 else None
-                    await edit_progress_message(
-                        progress_msg, "⬇️ Downloading...", downloaded, total, speed, eta
-                    )
-                    last_edit = now
-
-    elapsed = time.time() - start_time
-    speed = downloaded / elapsed if elapsed > 0 else 0
-    await edit_progress_message(
-        progress_msg, "✅ Download complete.", downloaded, total, speed, 0
-    )
-    return path, downloaded
-
-
-def get_formats(url: str):
-    ydl_opts = {
+    ydl_opts: dict = {
+        "outtmpl": outtmpl,
         "quiet": True,
-        "skip_download": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "nocheckcertificate": True,
+        "geo_bypass": True,
+        "merge_output_format": "mp4",
+        "concurrent_fragment_downloads": 4,
+        "retries": 5,
+        "http_headers": {
+            "User-Agent": USER_AGENT,
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     }
+
     if PROXY_URL:
+        # yt-dlp ke proxy format: socks5://... ya http://...
         ydl_opts["proxy"] = PROXY_URL
-    if os.path.exists(COOKIES_FILE):
-        ydl_opts["cookiefile"] = COOKIES_FILE
+
+    if not download:
+        ydl_opts["skip_download"] = True
+
+    if fmt:
+        # Specific format id
+        ydl_opts["format"] = fmt
+    else:
+        # “Ultra MAX” default best combined
+        ydl_opts["format"] = "bv*+ba/bestvideo+bestaudio/best"
+
+    # ---------- YouTube ----------
+    if any(h in host for h in ["youtube.com", "youtu.be", "youtubekids.com", "m.youtube.com"]):
+        if os.path.exists(COOKIES_FILE):
+            ydl_opts["cookiefile"] = COOKIES_FILE
+        ydl_opts.setdefault("compat_opts", [])
+        ydl_opts["compat_opts"] = list(
+            set(ydl_opts["compat_opts"] + ["jsinterp", "retry_forever"])
+        )
+
+    # ---------- Facebook ----------
+    if "facebook.com" in host or "fb.watch" in url:
+        ydl_opts.update(
+            {
+                "nocheckcertificate": True,
+                "extract_flat": False,
+                "compat_opts": list(
+                    set(
+                        (ydl_opts.get("compat_opts") or [])
+                        + [
+                            "jsinterp",
+                            "retry_forever",
+                            "facebook_subtitle_workaround",
+                            "facebook_mess",
+                        ]
+                    )
+                ),
+                "extractor_args": {
+                    "facebook": {
+                        "hd": True,
+                        "dcr": True,
+                        "use_hls": True,
+                        "skip_hls": False,
+                    }
+                },
+                "geo_bypass": True,
+                "geo_bypass_country": "US",
+            }
+        )
+
+    # ---------- Instagram ----------
+    if "instagram.com" in host:
+        ydl_opts.setdefault("extractor_args", {})
+        ydl_opts["extractor_args"]["instagram"] = {
+            "max_requests": 5,
+            "prefer_https": True,
+        }
+
+    # ---------- TikTok ----------
+    if "tiktok.com" in host:
+        ydl_opts.setdefault("extractor_args", {})
+        ydl_opts["extractor_args"]["tiktok"] = {
+            "download_addr": True,
+        }
+
+    # ---------- Twitter / X ----------
+    if "twitter.com" in host or "x.com" in host:
+        ydl_opts.setdefault("extractor_args", {})
+        ydl_opts["extractor_args"]["twitter"] = {
+            "legacy_api": "true",
+        }
+
+    # ---------- Reddit ----------
+    if "reddit.com" in host:
+        ydl_opts.setdefault("extractor_args", {})
+        ydl_opts["extractor_args"]["reddit"] = {
+            "video": True,
+            "audio": True,
+        }
+
+    # ---------- Vimeo / Dailymotion / OK.ru / Rumble / Streamable ----------
+    if any(x in host for x in ["vimeo.com", "dailymotion.com", "ok.ru", "rumble.com", "streamable.com"]):
+        ydl_opts.setdefault("compat_opts", [])
+        ydl_opts["compat_opts"] = list(set(ydl_opts["compat_opts"] + ["jsinterp"]))
+
+    # ---------- Google Drive ----------
+    if "drive.google.com" in host:
+        # yt-dlp khud handle karega; public ya “anyone with link” links par best effort
+        ydl_opts.setdefault("extractor_args", {})
+        ydl_opts["extractor_args"]["gdrive"] = {
+            "skip_drive_warning": True,
+        }
+
+    # ---------- Mediafire / Terabox / generic file hosts ----------
+    if any(x in host for x in ["mediafire.com", "terabox.com", "4shared.com", "zippyshare.com"]):
+        # generic and file-hosts: let yt-dlp do the redirect & final link
+        pass
+
+    # ---------- Adult sites (yt-dlp supports many) ----------
+    if any(
+        x in host
+        for x in [
+            "pornhub.com",
+            "xvideos.com",
+            "xnxx.com",
+            "xhamster.com",
+            "redtube.com",
+            "spankbang.com",
+            "youjizz.com",
+        ]
+    ):
+        ydl_opts.setdefault("compat_opts", [])
+        ydl_opts["compat_opts"] = list(
+            set(ydl_opts["compat_opts"] + ["jsinterp", "retry_forever"])
+        )
+
+    return ydl_opts
+
+
+def get_formats(url: str) -> tuple[list[dict], dict]:
+    """
+    Use yt-dlp to fetch available formats for a URL.
+    Returns (formats_list, full_info_dict)
+    Each format item: {format_id, ext, height, filesize}
+    """
+    ydl_opts = _build_ydl_opts(url, outtmpl="NA", download=False)
 
     with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
-        fmts = info.get("formats", [])
-        out = []
-        for f in fmts:
-            if f.get("vcodec") == "none" or f.get("acodec") == "none":
-                continue
-            ext = f.get("ext")
-            if ext not in ("mp4", "webm", "mkv"):
-                continue
-            height = f.get("height")
-            size = f.get("filesize") or f.get("filesize_approx") or 0
-            if size and size > MAX_FILE_SIZE:
-                continue
-            out.append(
-                {
-                    "format_id": f.get("format_id"),
-                    "ext": ext,
-                    "height": height,
-                    "filesize": size,
-                }
-            )
-        out.sort(key=lambda x: (x["height"] or 0), reverse=True)
-        return out, info
+
+    formats = info.get("formats", []) or []
+
+    simple_formats = []
+    for f in formats:
+        # skip non-media stuff
+        if f.get("vcodec") == "none" and f.get("acodec") == "none":
+            continue
+
+        fmt = {
+            "format_id": f.get("format_id"),
+            "ext": f.get("ext", "mp4"),
+            "height": f.get("height"),
+            "filesize": f.get("filesize") or f.get("filesize_approx") or 0,
+        }
+
+        if fmt["format_id"]:
+            simple_formats.append(fmt)
+
+    # height ke hisaab se sort (desc)
+    simple_formats.sort(key=lambda x: (x.get("height") or 0), reverse=True)
+
+    return simple_formats, info
 
 
-def download_with_ytdlp(url: str, fmt_id: str, outtmpl: str) -> str:
-    ydl_opts = {
-        "format": fmt_id,
-        "outtmpl": outtmpl,
-        "noplaylist": True,
-    }
-    if PROXY_URL:
-        ydl_opts["proxy"] = PROXY_URL
-    if os.path.exists(COOKIES_FILE):
-        ydl_opts["cookiefile"] = COOKIES_FILE
+def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
+    """
+    Download selected format using yt-dlp.
+    If fmt_id is None => use bestvideo+bestaudio/best
+    Returns final downloaded file path.
+    """
+    ydl_opts = _build_ydl_opts(
+        url,
+        outtmpl=tmp_name,
+        download=True,
+        fmt=fmt_id,
+    )
 
     with YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+        info = ydl.extract_info(url, download=True)
+        # Dinamically resolved filename (yt-dlp may append extension)
+        real_path = ydl.prepare_filename(info)
 
-    if os.path.exists(outtmpl):
-        return outtmpl
-    for ext in (".mp4", ".mkv", ".webm"):
-        if os.path.exists(outtmpl + ext):
-            return outtmpl + ext
-    raise FileNotFoundError("File not found after yt-dlp download")
+    return real_path
+
+
+# ==========================================
+#   DIRECT DOWNLOAD WITH PROGRESS
+# ==========================================
+
+async def download_direct_with_progress(url: str, filename: str, progress_msg):
+    """
+    Direct HTTP(S) download using aiohttp with telegram message progress.
+    Returns (local_path, total_downloaded_bytes)
+    """
+    # safe filename
+    filename = filename or "file_from_url"
+    local_path = os.path.join(".", filename)
+
+    total_size = 0
+    downloaded = 0
+    last_edit_time = 0
+    start_time = time.time()
+
+    timeout = aiohttp.ClientTimeout(total=0, sock_connect=20, sock_read=0)
+
+    connector_kwargs = {}
+    if PROXY_URL:
+        # aiohttp me proxy session ke andar handle karenge
+        connector_kwargs["ssl"] = False  # kuch proxies me SSL issue aa sakta hai
+
+    async with aiohttp.ClientSession(
+        timeout=timeout,
+        headers={"User-Agent": USER_AGENT},
+        **connector_kwargs,
+    ) as session:
+        kwargs = {}
+        if PROXY_URL:
+            kwargs["proxy"] = PROXY_URL
+
+        async with session.get(url, **kwargs) as resp:
+            resp.raise_for_status()
+
+            cl = resp.headers.get("Content-Length")
+            if cl and cl.isdigit():
+                total_size = int(cl)
+
+            # ensure directory exists
+            os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+
+            with open(local_path, "wb") as f:
+                async for chunk in resp.content.iter_chunked(1024 * 64):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    downloaded += len(chunk)
+
+                    now = time.time()
+                    if now - last_edit_time >= 3:  # har ~3 sec me update
+                        last_edit_time = now
+                        text = _format_progress_text(
+                            "⬇️ Downloading",
+                            downloaded,
+                            total_size,
+                            start_time,
+                        )
+                        try:
+                            await progress_msg.edit_text(text)
+                        except Exception:
+                            # agar edit fail ho jaye (message delete / flood), ignore
+                            pass
+
+    # final progress update
+    try:
+        text = _format_progress_text(
+            "✅ Download complete",
+            downloaded,
+            total_size,
+            start_time,
+        )
+        await progress_msg.edit_text(text)
+    except Exception:
+        pass
+
+    return local_path, downloaded
+
+
+def _format_progress_text(prefix: str, downloaded: int, total: int, start_time: float) -> str:
+    """
+    Human-readable progress text for Telegram message.
+    """
+    elapsed = max(time.time() - start_time, 1e-3)
+    speed = downloaded / elapsed  # bytes/sec
+
+    if total > 0:
+        percent = downloaded * 100 / total
+        bar_filled = int(percent // 5)
+        bar = "█" * bar_filled + "─" * (20 - bar_filled)
+        total_str = human_readable(total)
+    else:
+        percent = 0
+        bar = "█" * 0 + "─" * 20
+        total_str = "Unknown"
+
+    downloaded_str = human_readable(downloaded)
+    speed_str = human_readable(int(speed)) + "/s"
+
+    if total > 0 and speed > 0:
+        remaining = (total - downloaded) / speed
+        mins, secs = divmod(int(remaining), 60)
+        eta = f"{mins}m {secs}s"
+    else:
+        eta = "Calculating..."
+
+    text = (
+        f"{prefix}...\n"
+        f"[{bar}] {percent:.1f}%\n"
+        f"Downloaded: {downloaded_str} / {total_str}\n"
+        f"Speed: {speed_str}\n"
+        f"ETA: {eta}"
+    )
+    return text
