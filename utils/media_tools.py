@@ -1,5 +1,4 @@
 import os
-import math
 import subprocess
 from typing import List, Optional
 
@@ -7,7 +6,6 @@ from typing import List, Optional
 def get_media_duration(path: str) -> Optional[int]:
     """
     ffprobe se duration (seconds) nikalta hai.
-    Agar nahi mila to None return karega.
     """
     try:
         cmd = [
@@ -31,10 +29,9 @@ def get_media_duration(path: str) -> Optional[int]:
         return None
 
 
-def generate_screenshots(path: str, out_dir: str, count: int = 3) -> List[str]:
+def generate_screenshots(path: str, out_dir: str, count: int = 6) -> List[str]:
     """
-    Video se 1 ya zyada screenshots generate karega.
-    ffmpeg + ffprobe use karta hai.
+    Album ke liye multiple screenshots (default 6).
     """
     try:
         os.makedirs(out_dir, exist_ok=True)
@@ -43,8 +40,8 @@ def generate_screenshots(path: str, out_dir: str, count: int = 3) -> List[str]:
 
     duration = get_media_duration(path)
     if not duration or duration <= 0:
-        # fallback timings (5, 15, 30 sec)
-        times = [5, 15, 30][:count]
+        # Fallback timings
+        times = [5, 15, 30, 45, 60, 75][:count]
     else:
         step = max(duration // (count + 1), 1)
         times = [step * (i + 1) for i in range(count)]
@@ -61,12 +58,19 @@ def generate_screenshots(path: str, out_dir: str, count: int = 3) -> List[str]:
             path,
             "-frames:v",
             "1",
+            "-vf",
+            "scale=320:-1:force_original_aspect_ratio=decrease",
             "-q:v",
-            "2",
+            "5",
             out_path,
         ]
         try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+            )
             if os.path.exists(out_path):
                 shots.append(out_path)
         except Exception:
@@ -74,25 +78,38 @@ def generate_screenshots(path: str, out_dir: str, count: int = 3) -> List[str]:
     return shots
 
 
-def generate_sample_clip(path: str, out_path: str, duration_sec: int = 15) -> Optional[str]:
+def generate_thumbnail_frame(path: str, out_path: str) -> Optional[str]:
     """
-    Video ke starting se `duration_sec` seconds ka sample clip banata hai.
+    Ek beech ka frame thumbnail ke liye (video ka 'sense' dikhe).
     """
+    dur = get_media_duration(path)
+    if dur and dur > 4:
+        t = dur // 2  # middle of video
+    else:
+        t = 2
+
     cmd = [
         "ffmpeg",
         "-y",
         "-ss",
-        "0",
+        str(t),
         "-i",
         path,
-        "-t",
-        str(duration_sec),
-        "-c",
-        "copy",
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=320:-1:force_original_aspect_ratio=decrease",
+        "-q:v",
+        "4",
         out_path,
     ]
     try:
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
         if os.path.exists(out_path):
             return out_path
     except Exception:
