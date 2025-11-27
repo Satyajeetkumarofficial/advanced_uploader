@@ -2,6 +2,8 @@ import os
 import re
 import time
 import requests
+from urllib.parse import urlparse, parse_qs
+
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -32,10 +34,14 @@ from utils.reactions import react_message
 # simple URL regex
 URL_REGEX = r"https?://[^\s]+"
 
-# per-user pending job state
+# per-user pending job state (URL download)
 PENDING_DOWNLOAD: dict[int, dict] = {}
 
+# thumbnail ke liye pending photo state
+THUMB_PENDING: dict[int, bool] = {}
 
+
+# ---------------------- helpers ---------------------- #
 def split_url_and_name(text: str):
     """
     "url | new_name.mp4" format ko split karta hai.
@@ -83,7 +89,89 @@ def build_quality_keyboard(formats):
     return InlineKeyboardMarkup(buttons)
 
 
+def extract_youtube_id(url: str) -> str | None:
+    """
+    YouTube / Shorts / youtu.be se video-id nikalta hai.
+    """
+    try:
+        u = urlparse(url)
+        host = (u.netloc or "").lower()
+
+        # youtu.be/<id>
+        if "youtu.be" in host:
+            vid = u.path.lstrip("/")
+            return vid or None
+
+        # youtube.com/watch?v=<id>
+        if "youtube.com" in host:
+            qs = parse_qs(u.query)
+            if "v" in qs and qs["v"]:
+                return qs["v"][0]
+
+            # youtube.com/shorts/<id>
+            if u.path.startswith("/shorts/"):
+                return u.path.split("/shorts/")[-1].split("/")[0] or None
+
+            # youtube.com/embed/<id>
+            if u.path.startswith("/embed/"):
+                return u.path.split("/embed/")[-1].split("/")[0] or None
+
+    except Exception:
+        return None
+    return None
+
+
+def get_site_thumbnail_url(info: dict | None, url: str) -> str | None:
+    """
+    YouTube ke liye hamesha img.youtube.com se JPEG thumbnail,
+    baaki sites ke liye info["thumbnail"] try karega.
+    """
+    yt_id = extract_youtube_id(url)
+    if yt_id:
+        # high quality YT JPEG thumbnail
+        return f"https://img.youtube.com/vi/{yt_id}/maxresdefault.jpg"
+
+    if info:
+        return info.get("thumbnail")
+    return None
+
+
+# ---------------------- register handlers ---------------------- #
 def register_url_handlers(app: Client):
+    # ==============================
+    #   THUMBNAIL PHOTO HANDLER
+    # ==============================
+    @app.on_message(filters.private & filters.photo)
+    async def thumb_photo_handler(client: Client, message: Message):
+        user_id = message.from_user.id
+
+        # Agar user se thumbnail expected hi nahi hai to ignore
+        if not THUMB_PENDING.get(user_id):
+            return
+
+        if not message.photo:
+            return
+
+        photo = message.photo[-1]
+        file_id = photo.file_id
+
+        # DB me save karo
+        set_thumb(user_id, file_id)
+
+        # pending state clear
+        THUMB_PENDING.pop(user_id, None)
+
+        await message.reply_text(
+            "✅ Thumbnail set ho gaya.\n"
+            "Ab se aapke VIDEO uploads me ye thumbnail use hoga "
+            "(agar YouTube ka original thumbnail ya koi aur override na ho)."
+        )
+
+        try:
+            await react_message(client, message, "settings")
+        except Exception:
+            pass
+
     # ==============================
     #   MAIN URL MESSAGE HANDLER
     # ==============================
@@ -230,7 +318,7 @@ def register_url_handlers(app: Client):
         url_candidate, custom_name = split_url_and_name(text)
         match = re.search(URL_REGEX, url_candidate)
         if not match:
-            # random text → ignore
+            # random text → ignore (koi warning nahi)
             return
 
         url = match.group(0)
@@ -301,7 +389,7 @@ def register_url_handlers(app: Client):
             formats, info = [], None
 
         if formats:
-            title = info.get("title", head_fname or "video")
+            title = info.get("title", head_fname or "video") if info else (head_fname or "video")
 
             filtered = []
             for f in formats:
@@ -317,7 +405,8 @@ def register_url_handlers(app: Client):
             base_name = custom_name or f"{title}.mp4"
             base_name = safe_filename(base_name)
 
-            thumb_url = info.get("thumbnail")  # YouTube/other site thumbnail
+            # 🔴 YOUTUBE THUMBNAIL FIX: hamesha JPEG URL generate karo
+            thumb_url = get_site_thumbnail_url(info, url)
 
             PENDING_DOWNLOAD[user_id] = {
                 "type": "yt",
@@ -328,7 +417,7 @@ def register_url_handlers(app: Client):
                 "filename": base_name,
                 "custom_name": custom_name,
                 "head_size": head_size,
-                "thumb_url": thumb_url,
+                "thumb_url": thumb_url,  # direct_dl + fmt_ dono use karenge
                 "mode": "await_name_choice",
             }
 
@@ -449,10 +538,18 @@ def register_url_handlers(app: Client):
             if data == "settings_screens":
                 new_val = not bool(user.get("send_screenshots"))
                 set_screenshots(user_id, new_val)
+
+                status_txt = (
+                    "📸 Screenshots ab **ON** hain."
+                    if new_val
+                    else "📸 Screenshots ab **OFF** hain."
+                )
+                await msg.reply_text(status_txt, disable_web_page_preview=True)
+
                 try:
                     await query.answer(
                         "📸 Screenshots: ON" if new_val else "📸 Screenshots: OFF",
-                        show_alert=True,
+                        show_alert=False,
                     )
                 except Exception:
                     pass
@@ -464,11 +561,20 @@ def register_url_handlers(app: Client):
 
             if data == "settings_sample":
                 new_val = not bool(user.get("send_sample"))
+                # duration None rehne do, user /setsample se set kare
                 set_sample(user_id, new_val, None)
+
+                status_txt = (
+                    "🎬 Sample video ab **ON** hai."
+                    if new_val
+                    else "🎬 Sample video ab **OFF** hai."
+                )
+                await msg.reply_text(status_txt, disable_web_page_preview=True)
+
                 try:
                     await query.answer(
                         "🎬 Sample: ON" if new_val else "🎬 Sample: OFF",
-                        show_alert=True,
+                        show_alert=False,
                     )
                 except Exception:
                     pass
@@ -485,7 +591,7 @@ def register_url_handlers(app: Client):
                 try:
                     await query.answer(
                         f"🎞 Upload type: {new_type.upper()}",
-                        show_alert=True,
+                        show_alert=False,
                     )
                 except Exception:
                     pass
@@ -571,8 +677,10 @@ def register_url_handlers(app: Client):
 
         # -------- Thumbnail submenu extra actions --------
         if data == "thumb_set":
+            THUMB_PENDING[user_id] = True
             await msg.reply_text(
-                "📸 Thumbnail set karne ke liye kisi **photo par reply** karke `/setthumb` bhejo."
+                "📸 Thumbnail set karne ke liye ab koi **photo bhejo**.\n"
+                "Jo agla photo bhejoge, wahi thumbnail save ho jayega."
             )
             try:
                 await react_message(client, msg, "settings")
@@ -610,8 +718,10 @@ def register_url_handlers(app: Client):
             return
 
         if data == "thumb_change":
+            THUMB_PENDING[user_id] = True
             await msg.reply_text(
-                "🔁 Naya thumbnail set karne ke liye kisi **photo par reply** karke `/setthumb` bhejo."
+                "🔁 Naya thumbnail set karne ke liye ab koi **photo bhejo**.\n"
+                "Jo agla photo bhejoge, wahi naya thumbnail ban jayega."
             )
             try:
                 await react_message(client, msg, "settings")
@@ -621,6 +731,7 @@ def register_url_handlers(app: Client):
 
         if data == "thumb_delete":
             set_thumb(user_id, None)
+            THUMB_PENDING.pop(user_id, None)
             await msg.reply_text("✅ Thumbnail delete ho gaya.")
             try:
                 await react_message(client, msg, "settings")
@@ -811,7 +922,7 @@ def register_url_handlers(app: Client):
 
             progress_msg = await msg.edit_text("⬇️ Direct download try ho raha hai...")
 
-            # YouTube / yt-dlp thumbnail agar available ho to pahle download karo
+            # YouTube / site thumbnail agar available ho to pahle download karo
             job_thumb_path = None
             thumb_url = state.get("thumb_url")
             if thumb_url:
@@ -933,7 +1044,7 @@ def register_url_handlers(app: Client):
                 del PENDING_DOWNLOAD[user_id]
                 return
 
-            # YT / site original thumbnail – final upload ke liye
+            # YouTube / site original thumbnail – final upload ke liye
             job_thumb_path = None
             thumb_url = state.get("thumb_url")
             if thumb_url:
