@@ -1,6 +1,7 @@
-pyrogram
+pyrogram==2.0.106
 tgcrypto
+pymongo
 yt-dlp
 requests
-pymongo[srv]
+aiohttp
 flask
