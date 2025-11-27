@@ -39,3 +39,7 @@ PROXIES = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
 
 # cookies.txt path (for yt-dlp)
 COOKIES_FILE = os.getenv("COOKIES_FILE", "/app/cookies.txt")
+
+# FORCE SUBSCRIBE CHANNEL (username ya numeric ID)
+# Example env: FORCE_SUB_CHANNEL=@MyChannel
+FORCE_SUB_CHANNEL = os.getenv("FORCE_SUB_CHANNEL", "-1002269651634").strip()
