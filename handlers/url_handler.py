@@ -27,12 +27,12 @@ from utils.progress import human_readable
 from config import MAX_FILE_SIZE, NORMAL_COOLDOWN_SECONDS
 from handlers.start import help_text, help_keyboard, about_text
 from utils.forcesub import ensure_forcesub
-from utils.reactions import pick_reaction
+from utils.reactions import pick_reaction, react_message
 
 
 URL_REGEX = r"https?://[^\s]+"
 
-# per-user state
+# per-user state (yt-dlp / direct URL flow)
 PENDING_DOWNLOAD: dict[int, dict] = {}
 
 
@@ -73,6 +73,9 @@ def build_quality_keyboard(formats):
 
 
 def register_url_handlers(app: Client):
+    # ==============================
+    #   MAIN URL MESSAGE HANDLER
+    # ==============================
     @app.on_message(
         filters.private
         & filters.text
@@ -121,22 +124,19 @@ def register_url_handlers(app: Client):
             return
 
         user = get_user_doc(user_id)
-
         text = message.text.strip()
 
         # =========================
-        # 1) Rename name mode (URL flow)
+        # 1) RENAME NAME MODE
         # =========================
         state = PENDING_DOWNLOAD.get(user_id)
         if state and state.get("mode") == "await_new_name":
-            # agar user ne URL hi bhej diya to isko naya job maan lo
+            # Agar user ne URL bhej diya → purana job cancel, is URL ko naya job mano
             if re.search(URL_REGEX, text):
-                # purana pending job cancel
                 del PENDING_DOWNLOAD[user_id]
-                # neeche normal URL handling chalega
+                # niche normal URL handling chalega
             else:
-                new_name = text
-                new_name = safe_filename(new_name)
+                new_name = safe_filename(text)
 
                 # extension ensure karo
                 orig_filename = state.get("filename") or state.get("title") or "video.mp4"
@@ -150,25 +150,26 @@ def register_url_handlers(app: Client):
                 state["custom_name"] = new_name
                 state["filename"] = new_name
 
-                # yt-dlp wale case me ab quality choose
+                # yt-dlp case → ab quality select
                 if state["type"] == "yt":
                     formats = state["formats"]
-                    text_msg = (
+                    txt = (
                         "✅ File name set ho gaya.\n\n"
                         f"📄 File: `{state['filename']}`\n\n"
                         "🎥 Ab quality select karo:"
                     )
                     await message.reply_text(
-                        text_msg, reply_markup=build_quality_keyboard(formats)
+                        txt,
+                        reply_markup=build_quality_keyboard(formats),
                     )
                     state["mode"] = "await_quality"
                     try:
-                        await message.react(pick_reaction("rename"))
+                        await react_message(client, message, "rename")
                     except Exception:
                         pass
                     return
 
-                # direct link wale case me abhi turant download
+                # direct link case → ab direct download
                 if state["type"] == "direct":
                     url = state["url"]
                     filename = state["filename"]
@@ -183,6 +184,7 @@ def register_url_handlers(app: Client):
                         return
 
                     progress_msg = await message.reply_text("⬇️ Downloading...")
+
                     try:
                         path, downloaded_bytes = await download_direct_with_progress(
                             url, filename, progress_msg
@@ -202,7 +204,7 @@ def register_url_handlers(app: Client):
                             client, message, path, user_id, progress_msg
                         )
                         try:
-                            await message.react(pick_reaction("success"))
+                            await react_message(client, message, "success")
                         except Exception:
                             pass
                     except Exception as e:
@@ -213,7 +215,7 @@ def register_url_handlers(app: Client):
                     return
 
         # =========================
-        # 2) Normal URL handling
+        # 2) NORMAL URL HANDLING
         # =========================
         url_candidate, custom_name = split_url_and_name(text)
         match = re.search(URL_REGEX, url_candidate)
@@ -224,7 +226,7 @@ def register_url_handlers(app: Client):
         url = match.group(0)
 
         try:
-            await message.react(pick_reaction("url"))
+            await react_message(client, message, "url")
         except Exception:
             pass
 
@@ -236,10 +238,7 @@ def register_url_handlers(app: Client):
             if last_ts > 0 and diff < NORMAL_COOLDOWN_SECONDS:
                 wait_left = int(NORMAL_COOLDOWN_SECONDS - diff)
                 m, s = divmod(wait_left, 60)
-                if m > 0:
-                    wait_txt = f"{m}m {s}s"
-                else:
-                    wait_txt = f"{s}s"
+                wait_txt = f"{m}m {s}s" if m > 0 else f"{s}s"
                 await message.reply_text(
                     "⏳ Thoda rukna padega.\n"
                     f"Agla upload {wait_txt} baad kar sakte ho.\n"
@@ -284,13 +283,12 @@ def register_url_handlers(app: Client):
                 )
                 return
 
-        # pehle yt-dlp se sab types video/stream try
+        # ========= 2.1 yt-dlp TRY =========
         try:
             formats, info = get_formats(url) if is_ytdlp_site(url) else ([], None)
         except Exception:
             formats, info = [], None
 
-        # ========= YT-DLP SUCCESS =========
         if formats:
             title = info.get("title", head_fname or "video")
 
@@ -343,7 +341,7 @@ def register_url_handlers(app: Client):
             )
             return
 
-        # ========= DIRECT FILE MODE =========
+        # ========= 2.2 DIRECT FILE MODE =========
         await wait_msg.edit_text("🌐 Direct file download mode...")
 
         filename = head_fname or url.split("/")[-1] or "file"
@@ -353,12 +351,9 @@ def register_url_handlers(app: Client):
             filename = custom_name
         filename = safe_filename(filename)
 
-        # HTML / pure webpage block
+        # HTML / webpage block
         ctype_lower = (head_ctype or "").lower()
-        if (
-            ctype_lower.startswith("text/html")
-            and not is_video_ext(filename)
-        ):
+        if ctype_lower.startswith("text/html") and not is_video_ext(filename):
             await wait_msg.edit_text(
                 "❌ Is URL par sirf **HTML/webpage** mila.\n"
                 "Koi direct video/file link detect nahi hua.\n\n"
@@ -395,6 +390,9 @@ def register_url_handlers(app: Client):
             reply_markup=kb,
         )
 
+    # ==============================
+    #   CALLBACK HANDLER
+    # ==============================
     @app.on_callback_query()
     async def callbacks(client: Client, query):
         data = query.data
@@ -402,28 +400,32 @@ def register_url_handlers(app: Client):
         chat_id = msg.chat.id
         user_id = query.from_user.id
 
+        # try to ack quickly (avoid silent callback failures)
+        try:
+            await query.answer()
+        except Exception:
+            pass
+
         # HELP / ABOUT
         if data == "open_help":
-            await query.answer()
             await msg.reply_text(
                 help_text(),
                 reply_markup=help_keyboard(),
                 disable_web_page_preview=True,
             )
             try:
-                await msg.react(pick_reaction("help"))
+                await react_message(client, msg, "help")
             except Exception:
                 pass
             return
 
         if data == "open_about":
-            await query.answer()
             await msg.reply_text(
                 about_text(),
                 disable_web_page_preview=True,
             )
             try:
-                await msg.react(pick_reaction("help"))
+                await react_message(client, msg, "help")
             except Exception:
                 pass
             return
@@ -435,12 +437,15 @@ def register_url_handlers(app: Client):
             if data == "settings_screens":
                 new_val = not bool(user.get("send_screenshots"))
                 set_screenshots(user_id, new_val)
-                await query.answer(
-                    "📸 Screenshots: ON" if new_val else "📸 Screenshots: OFF",
-                    show_alert=True,
-                )
                 try:
-                    await msg.react(pick_reaction("settings"))
+                    await query.answer(
+                        "📸 Screenshots: ON" if new_val else "📸 Screenshots: OFF",
+                        show_alert=True,
+                    )
+                except Exception:
+                    pass
+                try:
+                    await react_message(client, msg, "settings")
                 except Exception:
                     pass
                 return
@@ -448,12 +453,15 @@ def register_url_handlers(app: Client):
             if data == "settings_sample":
                 new_val = not bool(user.get("send_sample"))
                 set_sample(user_id, new_val, None)
-                await query.answer(
-                    "🎬 Sample: ON" if new_val else "🎬 Sample: OFF",
-                    show_alert=True,
-                )
                 try:
-                    await msg.react(pick_reaction("settings"))
+                    await query.answer(
+                        "🎬 Sample: ON" if new_val else "🎬 Sample: OFF",
+                        show_alert=True,
+                    )
+                except Exception:
+                    pass
+                try:
+                    await react_message(client, msg, "settings")
                 except Exception:
                     pass
                 return
@@ -462,12 +470,15 @@ def register_url_handlers(app: Client):
                 cur = user.get("upload_type", "video")
                 new_type = "document" if cur == "video" else "video"
                 set_upload_type(user_id, new_type)
-                await query.answer(
-                    f"🎞 Upload type: {new_type.upper()}",
-                    show_alert=True,
-                )
                 try:
-                    await msg.react(pick_reaction("settings"))
+                    await query.answer(
+                        f"🎞 Upload type: {new_type.upper()}",
+                        show_alert=True,
+                    )
+                except Exception:
+                    pass
+                try:
+                    await react_message(client, msg, "settings")
                 except Exception:
                     pass
                 return
@@ -486,17 +497,17 @@ def register_url_handlers(app: Client):
                             ]
                         ]
                     )
-                    await query.answer()
-                    await msg.reply_text(
-                        "🖼 Thumbnail options:", reply_markup=kb
-                    )
+                    await msg.reply_text("🖼 Thumbnail options:", reply_markup=kb)
                 else:
-                    await query.answer(
-                        "Thumbnail set nahi hai.\nSet karne ke liye kisi photo par reply karke `/setthumb` bhejo.",
-                        show_alert=True,
-                    )
+                    try:
+                        await query.answer(
+                            "Thumbnail set nahi hai.\nSet karne ke liye kisi photo par reply karke `/setthumb` bhejo.",
+                            show_alert=True,
+                        )
+                    except Exception:
+                        pass
                 try:
-                    await msg.react(pick_reaction("settings"))
+                    await react_message(client, msg, "settings")
                 except Exception:
                     pass
                 return
@@ -515,17 +526,17 @@ def register_url_handlers(app: Client):
                             ]
                         ]
                     )
-                    await query.answer()
-                    await msg.reply_text(
-                        "📝 Caption options:", reply_markup=kb
-                    )
+                    await msg.reply_text("📝 Caption options:", reply_markup=kb)
                 else:
-                    await query.answer(
-                        "Caption set nahi hai.\nSet karne ke liye `/setcaption mera caption {file_name}` use karo.",
-                        show_alert=True,
-                    )
+                    try:
+                        await query.answer(
+                            "Caption set nahi hai.\nSet karne ke liye `/setcaption mera caption {file_name}` use karo.",
+                            show_alert=True,
+                        )
+                    except Exception:
+                        pass
                 try:
-                    await msg.react(pick_reaction("settings"))
+                    await react_message(client, msg, "settings")
                 except Exception:
                     pass
                 return
@@ -534,7 +545,6 @@ def register_url_handlers(app: Client):
 
         # Thumbnail submenu
         if data == "thumb_view":
-            await query.answer()
             user = get_user_doc(user_id)
             if not user.get("thumb_file_id"):
                 await msg.reply_text("❌ Aapne koi thumbnail set nahi kiya hai.")
@@ -545,24 +555,22 @@ def register_url_handlers(app: Client):
                 caption="🖼 Ye aapka current thumbnail hai.",
             )
             try:
-                await msg.react(pick_reaction("settings"))
+                await react_message(client, msg, "settings")
             except Exception:
                 pass
             return
 
         if data == "thumb_delete":
-            await query.answer("Thumbnail delete ho gaya.", show_alert=True)
             set_thumb(user_id, None)
             await msg.reply_text("✅ Thumbnail delete ho gaya.")
             try:
-                await msg.react(pick_reaction("settings"))
+                await react_message(client, msg, "settings")
             except Exception:
                 pass
             return
 
         # Caption submenu
         if data == "caption_view":
-            await query.answer()
             user = get_user_doc(user_id)
             cap = user.get("caption")
             if not cap:
@@ -570,26 +578,26 @@ def register_url_handlers(app: Client):
                 return
             await msg.reply_text(f"📝 Current caption:\n\n`{cap}`")
             try:
-                await msg.react(pick_reaction("settings"))
+                await react_message(client, msg, "settings")
             except Exception:
                 pass
             return
 
         if data == "caption_delete":
-            await query.answer("Caption delete ho gaya.", show_alert=True)
             set_caption(user_id, None)
             await msg.reply_text("✅ Caption delete ho gaya.")
             try:
-                await msg.react(pick_reaction("settings"))
+                await react_message(client, msg, "settings")
             except Exception:
                 pass
             return
 
-        # Niche se download-related callbacks
-
+        # ============================
+        #    DOWNLOAD-RELATED CALLBACKS
+        # ============================
         state = PENDING_DOWNLOAD.get(user_id)
         if not state:
-            await query.answer("⏱ Time out. Dubara URL bhejo.", show_alert=True)
+            await msg.edit_text("⏱ Time out. Dubara URL bhejo.")
             return
 
         url = state["url"]
@@ -604,7 +612,7 @@ def register_url_handlers(app: Client):
 
         if limit_c and limit_c > 0 and used_c >= limit_c:
             await msg.edit_text(
-                f"⛔ Count limit exceed: {used_c}/{limit_c}\n" "Dubara kal try karo."
+                f"⛔ Count limit exceed: {used_c}/{limit_c}\nDubara kal try karo."
             )
             del PENDING_DOWNLOAD[user_id]
             return
@@ -613,9 +621,8 @@ def register_url_handlers(app: Client):
         if limit_s and limit_s > 0:
             remaining_size = max(limit_s - used_s, 0)
 
+        # -------- name_default ----------
         if data == "name_default":
-            await query.answer("Default file name use hoga.", show_alert=False)
-
             if state["type"] == "yt":
                 formats = state["formats"]
                 await msg.edit_text(
@@ -626,7 +633,7 @@ def register_url_handlers(app: Client):
                 )
                 state["mode"] = "await_quality"
                 try:
-                    await msg.react(pick_reaction("settings"))
+                    await react_message(client, msg, "settings")
                 except Exception:
                     pass
                 return
@@ -639,7 +646,11 @@ def register_url_handlers(app: Client):
                     )
                     del PENDING_DOWNLOAD[user_id]
                     return
-                if remaining_size is not None and head_size > 0 and head_size > remaining_size:
+                if (
+                    remaining_size is not None
+                    and head_size > 0
+                    and head_size > remaining_size
+                ):
                     await msg.edit_text(
                         "⛔ Daily size limit exceed ho jayega is file se.\n"
                         f"Remain: {human_readable(remaining_size)}, File: {human_readable(head_size)}"
@@ -675,7 +686,7 @@ def register_url_handlers(app: Client):
                         client, msg, path, user_id, progress_msg
                     )
                     try:
-                        await msg.react(pick_reaction("success"))
+                        await react_message(client, msg, "success")
                     except Exception:
                         pass
                 except Exception as e:
@@ -685,8 +696,8 @@ def register_url_handlers(app: Client):
                         del PENDING_DOWNLOAD[user_id]
                 return
 
+        # -------- name_rename ----------
         if data == "name_rename":
-            await query.answer("Naya file name bhejo (ext ke sath).", show_alert=True)
             state["mode"] = "await_new_name"
             prompt = await msg.reply_text(
                 "✏ Naya file name bhejo (extension ke sath),\n"
@@ -694,30 +705,49 @@ def register_url_handlers(app: Client):
             )
             state["rename_prompt_msg_id"] = prompt.id
             try:
-                await msg.react(pick_reaction("rename"))
+                await react_message(client, msg, "rename")
             except Exception:
                 pass
             return
 
+        # -------- direct_dl ----------
         if data == "direct_dl":
-            await query.answer("Direct download try ho raha hai...", show_alert=False)
+            try:
+                await query.answer("Direct download try ho raha hai...", show_alert=False)
+            except Exception:
+                pass
+
+            state = PENDING_DOWNLOAD.get(user_id)
+            if not state:
+                await msg.edit_text("⏱ Time out or no pending job. Dubara URL bhejo.")
+                return
+
             progress_msg = await msg.edit_text("⬇️ Direct download try ho raha hai...")
             try:
                 path, downloaded_bytes = await download_direct_with_progress(
-                    url, filename, progress_msg
+                    state["url"], state["filename"], progress_msg
                 )
             except Exception as e:
                 await msg.edit_text(f"❌ Direct download fail: `{e}`")
-                if os.path.exists(filename):
-                    os.remove(filename)
-                del PENDING_DOWNLOAD[user_id]
+                fname = state.get("filename", "")
+                if fname and os.path.exists(fname):
+                    try:
+                        os.remove(fname)
+                    except Exception:
+                        pass
+                if user_id in PENDING_DOWNLOAD:
+                    del PENDING_DOWNLOAD[user_id]
                 return
 
             file_size = os.path.getsize(path)
             if file_size > MAX_FILE_SIZE:
                 await msg.edit_text("❌ File Telegram limit se badi hai, upload nahi ho sakti.")
-                os.remove(path)
-                del PENDING_DOWNLOAD[user_id]
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+                if user_id in PENDING_DOWNLOAD:
+                    del PENDING_DOWNLOAD[user_id]
                 return
 
             if remaining_size is not None and file_size > remaining_size:
@@ -725,24 +755,27 @@ def register_url_handlers(app: Client):
                     "⛔ Daily size limit exceed ho jayega is file se.\n"
                     f"Remain: {human_readable(remaining_size)}, File: {human_readable(file_size)}"
                 )
-                os.remove(path)
-                del PENDING_DOWNLOAD[user_id]
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+                if user_id in PENDING_DOWNLOAD:
+                    del PENDING_DOWNLOAD[user_id]
                 return
 
             update_stats(downloaded=downloaded_bytes, uploaded=0)
-            await upload_with_thumb_and_progress(
-                client, msg, path, user_id, progress_msg
-            )
-            del PENDING_DOWNLOAD[user_id]
+            await upload_with_thumb_and_progress(client, msg, path, user_id, progress_msg)
+            if user_id in PENDING_DOWNLOAD:
+                del PENDING_DOWNLOAD[user_id]
             try:
-                await msg.react(pick_reaction("success"))
+                await react_message(client, msg, "success")
             except Exception:
                 pass
             return
 
+        # -------- fmt_<id> (quality select) ----------
         if data.startswith("fmt_"):
             fmt_id = data.split("_", 1)[1]
-            await query.answer(f"Format: {fmt_id}", show_alert=False)
 
             formats = state["formats"]
             fmt_size = 0
@@ -823,7 +856,7 @@ def register_url_handlers(app: Client):
 
             del PENDING_DOWNLOAD[user_id]
             try:
-                await msg.react(pick_reaction("success"))
+                await react_message(client, msg, "success")
             except Exception:
                 pass
             return
