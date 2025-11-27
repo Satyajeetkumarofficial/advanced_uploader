@@ -78,6 +78,37 @@ def generate_screenshots(path: str, out_dir: str, count: int = 6) -> List[str]:
     return shots
 
 
+def generate_sample_clip(path: str, out_path: str, duration_sec: int = 15) -> Optional[str]:
+    """
+    Video ke starting se `duration_sec` seconds ka sample clip banata hai.
+    """
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        "0",
+        "-i",
+        path,
+        "-t",
+        str(duration_sec),
+        "-c",
+        "copy",
+        out_path,
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        if os.path.exists(out_path):
+            return out_path
+    except Exception:
+        pass
+    return None
+
+
 def generate_thumbnail_frame(path: str, out_path: str) -> Optional[str]:
     """
     Ek beech ka frame thumbnail ke liye (video ka 'sense' dikhe).
