@@ -31,7 +31,6 @@ async def upload_with_thumb_and_progress(
     suffix = user.get("suffix") or ""
     final_name = f"{prefix}{base_name}{suffix}"
 
-    # 👇 Ab yahi decide karega – VIDEO ya DOCUMENT
     upload_type = user.get("upload_type", "video")  # "video" / "document"
 
     caption_template = user.get("caption")
@@ -43,8 +42,10 @@ async def upload_with_thumb_and_progress(
     # Thumbnail priority:
     # 1) job_thumb_path (YouTube / yt-dlp)
     # 2) user ka permanent thumb
+    # 3) agar upload_type == "video" & file video hai → auto frame se thumb
     thumb_path = None
     thumb_downloaded_path = None
+    auto_thumb_dir = None
 
     if job_thumb_path and os.path.exists(job_thumb_path):
         thumb_path = job_thumb_path
@@ -56,6 +57,13 @@ async def upload_with_thumb_and_progress(
             thumb_path = thumb_downloaded_path
         except Exception:
             thumb_path = None
+
+    # AUTO THUMB (agar abhi bhi thumb nahi hai aur video file hai)
+    if thumb_path is None and upload_type == "video" and is_video_ext(path):
+        auto_thumb_dir = f"auto_thumb_{user_id}"
+        shots = generate_screenshots(path, out_dir=auto_thumb_dir, count=1)
+        if shots:
+            thumb_path = shots[0]
 
     spoiler_flag = bool(user.get("spoiler"))
 
@@ -137,9 +145,6 @@ async def upload_with_thumb_and_progress(
 
     sent = None
     try:
-        # ⚙️ Yahan se main change:
-        # Agar upload_type == "video" → hamesha send_video try karo
-        # warna send_document
         if upload_type == "video":
             try:
                 sent = await app.send_video(
@@ -152,7 +157,7 @@ async def upload_with_thumb_and_progress(
                     progress=upload_progress,
                 )
             except Exception:
-                # agar kisi wajah se video fail ho jaye to fallback document
+                # Agar video upload fail ho (codec/ffmpeg issue) to document fallback
                 sent = await app.send_document(
                     chat_id=message.chat.id,
                     document=path,
@@ -169,7 +174,6 @@ async def upload_with_thumb_and_progress(
                 progress=upload_progress,
             )
 
-        # usage + stats update
         increment_usage(user_id, file_size)
         update_stats(downloaded=0, uploaded=file_size)
 
@@ -195,7 +199,6 @@ async def upload_with_thumb_and_progress(
             f"File size: {human_readable(file_size)}"
         )
 
-        # Log channel
         if LOG_CHANNEL != 0:
             try:
                 text = (
@@ -222,7 +225,6 @@ async def upload_with_thumb_and_progress(
         return sent
 
     finally:
-        # Cleanup
         if os.path.exists(path):
             try:
                 os.remove(path)
@@ -238,5 +240,16 @@ async def upload_with_thumb_and_progress(
         if job_thumb_path and os.path.exists(job_thumb_path):
             try:
                 os.remove(job_thumb_path)
+            except Exception:
+                pass
+
+        if auto_thumb_dir and os.path.exists(auto_thumb_dir):
+            try:
+                for f in os.listdir(auto_thumb_dir):
+                    try:
+                        os.remove(os.path.join(auto_thumb_dir, f))
+                    except Exception:
+                        pass
+                os.rmdir(auto_thumb_dir)
             except Exception:
                 pass
