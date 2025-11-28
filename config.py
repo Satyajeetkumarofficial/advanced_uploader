@@ -42,7 +42,7 @@ COOKIES_FILE = os.getenv("COOKIES_FILE", "/app/cookies.txt")
 
 # FORCE SUBSCRIBE CHANNEL (username ya numeric ID)
 # Example env: FORCE_SUB_CHANNEL=@MyChannel
-FORCE_SUB_CHANNEL = os.getenv("FORCE_SUB_CHANNEL", "-1002269651634").strip()
+FORCE_SUB_CHANNEL = os.getenv("FORCE_SUB_CHANNEL", "-1003267218855").strip()
 
 # progress update duration (seconds)
 PROGRESS_UPDATE_INTERVAL = 3
