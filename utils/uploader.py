@@ -83,6 +83,9 @@ async def upload_with_thumb_and_progress(
 
         return
 
+    # ---------------- DETECT TYPE: VIDEO OR NOT ----------------
+    is_video = is_video_ext(path)
+
     # ---------------- THUMBNAIL PRIORITY ----------------
     # 1) job_thumb_path (YouTube / yt-dlp)
     # 2) user ka permanent thumb
@@ -102,8 +105,8 @@ async def upload_with_thumb_and_progress(
         except Exception:
             thumb_path = None
 
-    # AUTO THUMB (agar abhi bhi thumb nahi hai aur video file hai + setting video)
-    if thumb_path is None and upload_type == "video" and is_video_ext(path):
+    # AUTO THUMB (agar abhi bhi thumb nahi hai aur file video hai)
+    if thumb_path is None and is_video:
         auto_thumb_dir = f"auto_thumb_{user_id}"
         os.makedirs(auto_thumb_dir, exist_ok=True)
         auto_thumb = os.path.join(auto_thumb_dir, "thumb.jpg")
@@ -116,7 +119,7 @@ async def upload_with_thumb_and_progress(
     spoiler_flag = bool(user.get("spoiler"))
 
     # 📸 Screenshots album (sirf video ke liye, 6 shots)
-    if user.get("send_screenshots") and is_video_ext(path):
+    if user.get("send_screenshots") and is_video:
         from_dir = f"screens_{user_id}"
         shots = generate_screenshots(path, out_dir=from_dir, count=6)
         if shots:
@@ -149,7 +152,7 @@ async def upload_with_thumb_and_progress(
                     pass
 
     # 🎬 Sample clip (sirf video files)
-    if user.get("send_sample") and is_video_ext(path):
+    if user.get("send_sample") and is_video:
         sample_duration = int(user.get("sample_duration") or 15)
         sample_path = f"sample_{user_id}.mp4"
         sample = generate_sample_clip(path, sample_path, sample_duration)
@@ -191,20 +194,24 @@ async def upload_with_thumb_and_progress(
             eta,
         )
 
-    # 🔢 Duration detect (0:00 fix)
+    # 🔢 Duration detect (sirf video ke liye)
     duration = None
-    if upload_type == "video" and is_video_ext(path):
+    if is_video:
         duration = get_media_duration(path)
 
     sent = None
     try:
-        # ✅ FINAL RULE:
-        #   upload_type == "video"  & file is video  → send_video
-        #   upload_type == "video"  & NOT video     → send_document
-        #   upload_type == "document" (kuch bhi ho) → send_document
+        # ================== FINAL RULE ==================
+        # Upload Type = VIDEO:
+        #   - agar file video hai  → send_video
+        #   - warna                → send_document (thumb ke saath)
+        #
+        # Upload Type = DOCUMENT:
+        #   - sab kuch             → send_document (thumb ke saath)
+        # =================================================
 
-        if upload_type == "video" and is_video_ext(path):
-            # VIDEO UPLOAD
+        if upload_type == "video" and is_video:
+            # 🎞 VIDEO UPLOAD (sirf video ext)
             video_kwargs = dict(
                 chat_id=message.chat.id,
                 video=path,
@@ -221,21 +228,26 @@ async def upload_with_thumb_and_progress(
             try:
                 sent = await app.send_video(**video_kwargs)
             except Exception:
-                # Agar video upload fail ho (codec issue) to document fallback
+                # fallback → document with thumb
                 sent = await app.send_document(
                     chat_id=message.chat.id,
                     document=path,
                     file_name=final_name,
                     caption=caption,
+                    thumb=thumb_path,
                     progress=upload_progress,
                 )
         else:
-            # NON-VIDEO ya upload_type=document → DOCUMENT
+            # BAAKI SAB CASE:
+            #  - upload_type = video & NOT video file
+            #  - upload_type = document & koi bhi file
+            # sab ko document ke रूप में (thumb agar available hai to use)
             sent = await app.send_document(
                 chat_id=message.chat.id,
                 document=path,
                 file_name=final_name,
                 caption=caption,
+                thumb=thumb_path,
                 progress=upload_progress,
             )
 
