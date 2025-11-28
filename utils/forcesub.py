@@ -1,106 +1,156 @@
-from pyrogram import Client
-from pyrogram.errors import UserNotParticipant, RPCError
+# utils/forcesub.py
+
+from pyrogram.client import Client
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from config import FORCE_SUB_CHANNEL, FORCE_SUB_LINK
+from pyrogram.errors import UserNotParticipant
+from config import FORCE_SUB_CHANNEL
+
+# Har user ke liye last force-sub message ka record:
+# { user_id: (chat_id, message_id) }
+FORCE_MESSAGES: dict[int, tuple[int, int]] = {}
 
 
-def _normalize_channel(chat: str):
+def _parse_force_chat_id() -> int | str | None:
     """
-    @username, numeric ID, url – sabko normalize kar deta hai.
+    FORCE_SUB_CHANNEL ko proper chat_id me convert karta hai.
+    - Agar "@channelusername" hai -> "@channelusername" (string hi chalega)
+    - Agar "-100xxxxxxxxxx" ya number hai -> int me convert
     """
-    if not chat:
+    if not FORCE_SUB_CHANNEL:
         return None
 
-    chat = chat.strip()
+    chat_id = FORCE_SUB_CHANNEL.strip()
 
-    # @username
-    if chat.startswith("@"):
-        return chat
-
-    # numeric id (-100xxxx)
-    if chat.lstrip("-").isdigit():
-        return int(chat)
-
-    # t.me/username or t.me/+inviteCode
-    if "t.me" in chat:
-        return chat  # treat as link
-
-    return chat
-
-
-async def _build_join_url(app: Client, chat_id):
-    """
-    Public channel → username → https://t.me/username
-    Private channel → invite link auto-generate
-    FORCE_SUB_LINK given → highest priority
-    """
-    # If user provided FORCE_SUB_LINK → always use it
-    if FORCE_SUB_LINK and FORCE_SUB_LINK.startswith("http"):
-        return FORCE_SUB_LINK
-
-    # If chat is already a full link
-    if isinstance(chat_id, str) and "t.me/" in chat_id:
+    if chat_id.startswith("@"):
+        # public username
         return chat_id
 
-    # Get chat info
+    # numeric id
+    try:
+        return int(chat_id)
+    except ValueError:
+        # kuch galat format hai
+        return chat_id
+
+
+async def _build_force_sub_link(app: Client) -> str | None:
+    """
+    FORCE_SUB_CHANNEL se proper join link banata hai.
+    - Public channel -> t.me/username
+    - Private channel -> export_chat_invite_link()
+    """
+    raw = FORCE_SUB_CHANNEL.strip() if FORCE_SUB_CHANNEL else None
+    if not raw:
+        return None
+
+    chat_id = _parse_force_chat_id()
+
+    # Agar @username hai
+    if isinstance(chat_id, str) and chat_id.startswith("@"):
+        return f"https://t.me/{chat_id.lstrip('@')}"
+
     try:
         chat = await app.get_chat(chat_id)
+        if chat.username:
+            return f"https://t.me/{chat.username}"
+
+        # Private channel, no username -> invite link
+        try:
+            invite_link = await app.export_chat_invite_link(chat.id)
+            return invite_link
+        except Exception:
+            return None
     except Exception:
         return None
 
-    # Public channel with username
-    if chat.username:
-        return f"https://t.me/{chat.username}"
 
-    # Private channel: create auto joinchat link
+async def _cleanup_old_force_msg(app: Client, user_id: int):
+    """
+    Agar is user ke liye koi purana force-sub message store hai,
+    to usko delete kar de (agar possible ho).
+    """
+    info = FORCE_MESSAGES.get(user_id)
+    if not info:
+        return
+
+    chat_id, msg_id = info
     try:
-        invite = await app.create_chat_invite_link(chat_id)
-        return invite.invite_link
+        await app.delete_messages(chat_id=chat_id, message_ids=[msg_id])
     except Exception:
-        return None
+        pass
+
+    FORCE_MESSAGES.pop(user_id, None)
 
 
 async def ensure_forcesub(app: Client, message: Message) -> bool:
     """
-    ForceSubscribe modern v5 — Auto public/private detection + auto invite-link creation.
+    True = user allowed
+    False = force subscribe message bhej diya, handler ko return karna hai.
+
+    Yahi function har jagah use ho raha:
+    - /start
+    - /help
+    - URL handler
+    etc.
     """
-    raw = FORCE_SUB_CHANNEL
-    if not raw:
-        return True  # ForceSub disabled
+    if not FORCE_SUB_CHANNEL:
+        # Force-sub fully disabled
+        return True
 
-    chat_id = _normalize_channel(raw)
+    user_id = message.from_user.id
+    chat_id = _parse_force_chat_id()
+    if chat_id is None:
+        # config galat hai
+        await message.reply_text(
+            "⚠️ Force subscribe configuration me problem hai.\n"
+            "Please admin se contact karo."
+        )
+        return False
 
+    # Pehle try karo: user already member hai kya?
     try:
-        # Check membership
-        await app.get_chat_member(chat_id, message.from_user.id)
+        await app.get_chat_member(chat_id, user_id)
+
+        # ✅ Member mil gaya:
+        # Agar koi purana force-sub message store hai to delete kar do
+        await _cleanup_old_force_msg(app, user_id)
+
         return True
 
     except UserNotParticipant:
-        # User not joined → Build join button
-        join_url = await _build_join_url(app, chat_id)
-
-        kb = None
-        if join_url:
-            kb = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("📢 Join Channel", url=join_url)]]
+        # ❌ Abhi bhi join nahi kiya hua
+        join_link = await _build_force_sub_link(app)
+        if not join_link:
+            await message.reply_text(
+                "⚠️ Force subscribe configuration me problem hai.\n"
+                "Please admin se contact karo."
             )
+            return False
 
-        await message.reply_text(
-            "🚫 Pehle hamare official channel join karo,\n"
-            "fir bot use kar sakte ho.",
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "📢 Channel Join Karo", url=join_link
+                    )
+                ]
+            ]
+        )
+
+        sent = await message.reply_text(
+            "🚫 Pehle hamare official channel join karo, fir bot use kar sakte ho.\n\n"
+            "1️⃣ Channel join karo.\n"
+            "2️⃣ Phir `/start` ya apna URL dubara bhejo.\n\n"
+            "Bot aapka membership automatic check karega ✅",
             reply_markup=kb,
             disable_web_page_preview=True,
         )
+
+        # Is user ke liye last force-sub message store kar lo
+        FORCE_MESSAGES[user_id] = (sent.chat.id, sent.id)
         return False
 
-    except RPCError as e:
-        # Bot not admin, no permission, invalid ID etc.
-        await message.reply_text(
-            "⚠️ Force Subscribe configuration me dikkat hai.\n\n"
-            "👉 Check list:\n"
-            "• Bot ko channel me add karo\n"
-            "• Private channel ho to bot ko 'Invite Users' permission do\n"
-            "• FORCE_SUB_CHANNEL & FORCE_SUB_LINK check karo\n\n"
-            f"Error: `{e}`"
-        )
-        return False
+    except Exception:
+        # Agar koi aur error aaya (bot channel me nahi / permissions issue)
+        # To force-sub ko silently skip kar do, taki bot at least kaam kare.
+        return True
