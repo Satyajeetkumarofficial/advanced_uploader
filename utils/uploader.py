@@ -4,7 +4,7 @@ from pyrogram.client import Client
 from pyrogram.types import Message, InputMediaPhoto
 
 from utils.progress import edit_progress_message, human_readable
-from utils.downloader import is_video_ext
+from utils.downloader import is_video_ext   # <-- IMPORTANT
 from utils.media_tools import (
     generate_screenshots,
     generate_sample_clip,
@@ -23,90 +23,73 @@ async def upload_with_thumb_and_progress(
     progress_msg: Message,
     job_thumb_path: str | None = None,
 ):
-    # ---------------- SIZE CHECK ----------------
+    """
+    Final uploader:
+    - Video ke liye screenshots, sample clip, thumbnail, duration
+    - Upload type ke hisaab se:
+        * upload_type == "video"  -> sirf video files send_video() se
+        * upload_type == "document" -> sab send_document() se
+    - Facebook / Insta / YouTube sab yahi logic use karenge, kyunki yaha
+      sirf local file aur extension dekha ja raha hai.
+    """
+
+    # ==============================
+    #   BASIC CHECKS
+    # ==============================
     file_size = os.path.getsize(path)
     if file_size > MAX_FILE_SIZE:
         await message.reply_text("❌ File Telegram limit se badi hai, upload nahi ho sakti.")
-        os.remove(path)
+        try:
+            os.remove(path)
+        except Exception:
+            pass
         return
 
     user = get_user_doc(user_id)
     base_name = os.path.basename(path)
 
-    # ---------------- FINAL NAME (PREFIX / SUFFIX) ----------------
     prefix = user.get("prefix") or ""
     suffix = user.get("suffix") or ""
     final_name = f"{prefix}{base_name}{suffix}"
 
     upload_type = user.get("upload_type", "video")  # "video" / "document"
 
+    # ==============================
+    #   CAPTION
+    # ==============================
     caption_template = user.get("caption")
     if caption_template:
         caption = caption_template.replace("{file_name}", final_name)
     else:
         caption = f"📁 `{final_name}`"
 
-    # ─────────────────────────────────────
-    #  HTML / Webpage files ko block karo
-    # ─────────────────────────────────────
-    ext = os.path.splitext(path)[1].lower()
-    HTML_EXTS = [".html", ".htm", ".php", ".asp", ".aspx", ".jsp"]
-
-    if ext in HTML_EXTS:
-        try:
-            await progress_msg.edit_text(
-                "❌ Ye URL se sirf HTML/Webpage file mili hai.\n"
-                "📄 Webpage ko upload karna allowed nahi hai.\n"
-                "👉 Koi direct video/file link use karein (mp4, zip, etc.)."
-            )
-        except Exception:
-            try:
-                await message.reply_text(
-                    "❌ Ye URL se HTML/Webpage file mili hai.\n"
-                    "📄 Webpage upload supported nahi hai.\n"
-                    "👉 Koi direct video/file link use karein."
-                )
-            except Exception:
-                pass
-
-        if os.path.exists(path):
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-
-        if job_thumb_path and os.path.exists(job_thumb_path):
-            try:
-                os.remove(job_thumb_path)
-            except Exception:
-                pass
-
-        return
-
-    # ---------------- DETECT TYPE: VIDEO OR NOT ----------------
-    is_video = is_video_ext(path)
-
-    # ---------------- THUMBNAIL PRIORITY ----------------
-    # 1) job_thumb_path (YouTube / yt-dlp)
-    # 2) user ka permanent thumb
-    # 3) auto frame from video (middle frame)
+    # ==============================
+    #   THUMBNAIL PRIORITY
+    #   1) job_thumb_path (YouTube / yt-dlp)
+    #   2) user ka permanent thumb (thumb_file_id)
+    #   3) auto frame from video (middle frame)
+    # ==============================
     thumb_path = None
     thumb_downloaded_path = None
     auto_thumb_dir = None
 
+    # 1) Job-specific thumb (yt-dlp se aaya ho)
     if job_thumb_path and os.path.exists(job_thumb_path):
         thumb_path = job_thumb_path
+
+    # 2) User permanent thumb
     elif user.get("thumb_file_id"):
         try:
             thumb_downloaded_path = await app.download_media(
-                user["thumb_file_id"], file_name=f"thumb_{user_id}.jpg"
+                user["thumb_file_id"],
+                file_name=f"thumb_{user_id}.jpg"
             )
             thumb_path = thumb_downloaded_path
         except Exception:
             thumb_path = None
 
-    # AUTO THUMB (agar abhi bhi thumb nahi hai aur file video hai)
-    if thumb_path is None and is_video:
+    # 3) Auto thumbnail (sirf video file par, aur jab upload_type "video" ho)
+    if thumb_path is None and is_video_ext(path):
         auto_thumb_dir = f"auto_thumb_{user_id}"
         os.makedirs(auto_thumb_dir, exist_ok=True)
         auto_thumb = os.path.join(auto_thumb_dir, "thumb.jpg")
@@ -118,8 +101,10 @@ async def upload_with_thumb_and_progress(
 
     spoiler_flag = bool(user.get("spoiler"))
 
-    # 📸 Screenshots album (sirf video ke liye, 6 shots)
-    if user.get("send_screenshots") and is_video:
+    # ==============================
+    #   SCREENSHOTS (sirf video ke liye)
+    # ==============================
+    if user.get("send_screenshots") and is_video_ext(path):
         from_dir = f"screens_{user_id}"
         shots = generate_screenshots(path, out_dir=from_dir, count=6)
         if shots:
@@ -134,7 +119,12 @@ async def upload_with_thumb_and_progress(
                         )
                     )
                 else:
-                    media.append(InputMediaPhoto(s, has_spoiler=spoiler_flag))
+                    media.append(
+                        InputMediaPhoto(
+                            s,
+                            has_spoiler=spoiler_flag,
+                        )
+                    )
             try:
                 await app.send_media_group(
                     chat_id=message.chat.id,
@@ -145,14 +135,19 @@ async def upload_with_thumb_and_progress(
             finally:
                 for s in shots:
                     if os.path.exists(s):
-                        os.remove(s)
+                        try:
+                            os.remove(s)
+                        except Exception:
+                            pass
                 try:
                     os.rmdir(from_dir)
                 except Exception:
                     pass
 
-    # 🎬 Sample clip (sirf video files)
-    if user.get("send_sample") and is_video:
+    # ==============================
+    #   SAMPLE CLIP (sirf video ke liye)
+    # ==============================
+    if user.get("send_sample") and is_video_ext(path):
         sample_duration = int(user.get("sample_duration") or 15)
         sample_path = f"sample_{user_id}.mp4"
         sample = generate_sample_clip(path, sample_path, sample_duration)
@@ -170,9 +165,14 @@ async def upload_with_thumb_and_progress(
                 pass
             finally:
                 if os.path.exists(sample):
-                    os.remove(sample)
+                    try:
+                        os.remove(sample)
+                    except Exception:
+                        pass
 
-    # ---------------- PROGRESS HANDLER ----------------
+    # ==============================
+    #   PROGRESS CALLBACK
+    # ==============================
     start_time = time.time()
     last_edit = start_time
 
@@ -194,41 +194,50 @@ async def upload_with_thumb_and_progress(
             eta,
         )
 
-    # 🔢 Duration detect (sirf video ke liye)
+    # ==============================
+    #   DURATION (sirf video ke liye)
+    # ==============================
     duration = None
-    if is_video:
+    if is_video_ext(path):
         duration = get_media_duration(path)
 
     sent = None
     try:
-        # ================== FINAL RULE ==================
-        # Upload Type = VIDEO:
-        #   - agar file video hai  → send_video
-        #   - warna                → send_document (thumb ke saath)
-        #
-        # Upload Type = DOCUMENT:
-        #   - sab kuch             → send_document (thumb ke saath)
-        # =================================================
+        # ======================================
+        #   CASE 1: upload_type == "video"
+        #   -> sirf VIDEO EXTENSION wale files
+        #      send_video se jayenge
+        #   Baaki sab document me jayenge.
+        # ======================================
+        if upload_type == "video":
+            if is_video_ext(path):
+                video_kwargs = dict(
+                    chat_id=message.chat.id,
+                    video=path,
+                    file_name=final_name,
+                    caption=caption,
+                    thumb=thumb_path,
+                    has_spoiler=spoiler_flag,
+                    supports_streaming=True,
+                    progress=upload_progress,
+                )
+                if duration:
+                    video_kwargs["duration"] = duration
 
-        if upload_type == "video" and is_video:
-            # 🎞 VIDEO UPLOAD (sirf video ext)
-            video_kwargs = dict(
-                chat_id=message.chat.id,
-                video=path,
-                file_name=final_name,
-                caption=caption,
-                thumb=thumb_path,
-                has_spoiler=spoiler_flag,
-                supports_streaming=True,
-                progress=upload_progress,
-            )
-            if duration:
-                video_kwargs["duration"] = duration
-
-            try:
-                sent = await app.send_video(**video_kwargs)
-            except Exception:
-                # fallback → document with thumb
+                try:
+                    sent = await app.send_video(**video_kwargs)
+                except Exception:
+                    # Agar video upload fail ho (codec issue) to document fallback
+                    sent = await app.send_document(
+                        chat_id=message.chat.id,
+                        document=path,
+                        file_name=final_name,
+                        caption=caption,
+                        thumb=thumb_path,
+                        progress=upload_progress,
+                    )
+            else:
+                # Video mode hai, lekin ye video file nahi hai -> document ki tarah
                 sent = await app.send_document(
                     chat_id=message.chat.id,
                     document=path,
@@ -237,11 +246,13 @@ async def upload_with_thumb_and_progress(
                     thumb=thumb_path,
                     progress=upload_progress,
                 )
+
+        # ======================================
+        #   CASE 2: upload_type == "document"
+        #   -> har file document ki tarah jayegi
+        #   (mp3, apk, zip, pdf, html sab).
+        # ======================================
         else:
-            # BAAKI SAB CASE:
-            #  - upload_type = video & NOT video file
-            #  - upload_type = document & koi bhi file
-            # sab ko document ke रूप में (thumb agar available hai to use)
             sent = await app.send_document(
                 chat_id=message.chat.id,
                 document=path,
@@ -251,7 +262,9 @@ async def upload_with_thumb_and_progress(
                 progress=upload_progress,
             )
 
-        # ---------------- USAGE & STATS UPDATE ----------------
+        # ==============================
+        #   USAGE + STATS
+        # ==============================
         increment_usage(user_id, file_size)
         update_stats(downloaded=0, uploaded=file_size)
 
@@ -277,7 +290,9 @@ async def upload_with_thumb_and_progress(
             f"File size: {human_readable(file_size)}"
         )
 
-        # ---------------- LOG CHANNEL ----------------
+        # ==============================
+        #   LOG CHANNEL
+        # ==============================
         if LOG_CHANNEL != 0:
             try:
                 text = (
@@ -304,7 +319,9 @@ async def upload_with_thumb_and_progress(
         return sent
 
     finally:
-        # ---------------- CLEANUP ----------------
+        # ==============================
+        #   CLEANUP
+        # ==============================
         if os.path.exists(path):
             try:
                 os.remove(path)
