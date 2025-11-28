@@ -1,9 +1,7 @@
 import os
 import re
 import time
-import math
 import mimetypes
-import asyncio
 from urllib.parse import urlparse, unquote
 
 import aiohttp
@@ -18,12 +16,12 @@ from utils.progress import human_readable
 # ==========================================
 
 VIDEO_EXTS = [
-    ".mp4", ".mkv", ".mov", ".webm", ".flv", ".avi", ".m4v", ".3gp",
-    ".ts", ".m2ts", ".ogv", ".mpeg", ".mpg"
+    ".mp4", ".mkv", ".mov", ".webm", ".flv", ".avi", ".m4v",
+    ".3gp", ".ts", ".m2ts", ".ogv", ".mpeg", ".mpg"
 ]
 
 AUDIO_EXTS = [
-    ".mp3", ".aac", ".m4a", ".ogg", ".opus", ".flac", ".wav"
+    ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".wav"
 ]
 
 USER_AGENT = (
@@ -44,10 +42,11 @@ SAFE_FILENAME_LEN = 80
 
 
 # ==========================================
-#   EXTENSION + FILENAME HELPERS
+#   BASIC HELPERS
 # ==========================================
 
 def is_video_ext(filename: str) -> bool:
+    """Detect if file extension looks like a video / stream."""
     if not filename:
         return False
     name = filename.lower()
@@ -57,10 +56,22 @@ def is_video_ext(filename: str) -> bool:
     return False
 
 
+def is_audio_ext(filename: str) -> bool:
+    if not filename:
+        return False
+    name = filename.lower()
+    for ext in AUDIO_EXTS:
+        if name.endswith(ext):
+            return True
+    return False
+
+
 def guess_ext_from_type(content_type: str | None) -> str | None:
     if not content_type:
         return None
-    return mimetypes.guess_extension(content_type.split(";")[0].strip()) or None
+    return mimetypes.guess_extension(
+        content_type.split(";")[0].strip()
+    ) or None
 
 
 def sanitize_filename(name: str, max_len: int = SAFE_FILENAME_LEN) -> str:
@@ -68,9 +79,11 @@ def sanitize_filename(name: str, max_len: int = SAFE_FILENAME_LEN) -> str:
         return "video"
     name = unquote(name)
     name = re.sub(r"[\\/:*?\"<>|]", "", name)
+    name = name.replace("\n", " ").replace("\r", " ")
+    name = name.strip()
     if len(name) > max_len:
         name = name[:max_len]
-    return name.strip() or "video"
+    return name or "video"
 
 
 # ==========================================
@@ -79,15 +92,13 @@ def sanitize_filename(name: str, max_len: int = SAFE_FILENAME_LEN) -> str:
 
 def normalize_url(url: str) -> str:
     """
-    Facebook share links, redirect URLs, shorteners etc → resolve to real URL.
+    Facebook share / fb.watch / shorteners ko real URL me convert karta hai.
     """
     try:
         low = url.lower()
 
-        if any(x in low for x in [
-            "facebook.com/share/",
-            "fb.watch"
-        ]):
+        # facebook share / reel redirect
+        if "facebook.com/share/" in low or "fb.watch" in low:
             resp = requests.get(
                 url,
                 allow_redirects=True,
@@ -97,6 +108,7 @@ def normalize_url(url: str) -> str:
             )
             return resp.url or url
 
+        # tiktok short links
         if "vt.tiktok.com" in low or "vm.tiktok.com" in low:
             resp = requests.get(
                 url,
@@ -106,6 +118,7 @@ def normalize_url(url: str) -> str:
             )
             return resp.url or url
 
+        # x.com → twitter.com
         if "x.com/" in low:
             return url.replace("x.com", "twitter.com")
 
@@ -116,7 +129,7 @@ def normalize_url(url: str) -> str:
 
 
 # ==========================================
-#   BASIC HEAD REQUEST (size/type)
+#   HEAD REQUEST (SIZE / TYPE / FILENAME)
 # ==========================================
 
 def head_info(url: str):
@@ -167,7 +180,8 @@ def head_info(url: str):
 
         if not filename and ctype:
             ext = guess_ext_from_type(ctype)
-            filename = f"file{ext}" if ext else None
+            if ext:
+                filename = f"file{ext}"
 
     except Exception:
         pass
@@ -181,7 +195,7 @@ def head_info(url: str):
 
 def _build_ydl_opts(url: str, outtmpl: str, download=True, fmt=None):
     parsed = urlparse(url)
-    host = parsed.netloc.lower()
+    host = (parsed.netloc or "").lower()
 
     ydl_opts = {
         "quiet": True,
@@ -205,28 +219,44 @@ def _build_ydl_opts(url: str, outtmpl: str, download=True, fmt=None):
     if PROXY_URL:
         ydl_opts["proxy"] = PROXY_URL
 
-    ydl_opts["format"] = fmt if fmt else (
-        "bv*+ba/bestvideo+bestaudio/best"
-    )
+    # Default best combo
+    ydl_opts["format"] = fmt if fmt else "bv*+ba/bestvideo+bestaudio/best"
 
-    # Cookies (for YT)
-    if "youtube.com" in host or "youtu.be" in host:
+    # YOUTUBE
+    if any(x in host for x in ["youtube.com", "youtu.be"]):
         if os.path.exists(COOKIES_FILE):
             ydl_opts["cookiefile"] = COOKIES_FILE
         ydl_opts.setdefault("compat_opts", [])
         ydl_opts["compat_opts"] += ["jsinterp", "retry_forever"]
 
-    # FACEBOOK FIXES
+    # FACEBOOK – FINAL PATCH (NO GIF, ALWAYS VIDEO+SOUND)
     if "facebook.com" in host or "fb.watch" in url:
         ydl_opts.update({
-            "compat_opts": ["facebook_mess", "jsinterp"],
+            "format": "bv*[vcodec!*=av01][vcodec!*=vp9]+ba/best",
+            "merge_output_format": "mp4",
+            "hls_prefer_native": True,
             "extract_flat": False,
+            "nocheckcertificate": True,
+            "geo_bypass": True,
+            "geo_bypass_country": "US",
+            "postprocessors": [
+                {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
+            ],
+            "compat_opts": [
+                "jsinterp",
+                "retry_forever",
+                "facebook_subtitle_workaround",
+                "facebook_mess",
+            ],
             "extractor_args": {
                 "facebook": {
-                    "hd": True,
-                    "dcr": True,
-                    "use_hls": True,
-                    "skip_hls": False,
+                    "video": "true",
+                    "audio": "true",
+                    "dcr": "true",
+                    "hd": "true",
+                    "skip_hls": "false",
+                    "use_hls": "true",
+                    "recode": "mp4"
                 }
             }
         })
@@ -249,7 +279,7 @@ def _build_ydl_opts(url: str, outtmpl: str, download=True, fmt=None):
         ydl_opts.setdefault("extractor_args", {})
         ydl_opts["extractor_args"]["twitter"] = {"legacy_api": "true"}
 
-    # Drive
+    # GOOGLE DRIVE
     if "drive.google.com" in host:
         ydl_opts.setdefault("extractor_args", {})
         ydl_opts["extractor_args"]["gdrive"] = {"skip_drive_warning": True}
@@ -266,7 +296,7 @@ def get_formats(url: str):
     opts = _build_ydl_opts(url, outtmpl="NA", download=False)
 
     parsed = urlparse(url)
-    host = parsed.netloc.lower()
+    host = (parsed.netloc or "").lower()
 
     try:
         with YoutubeDL(opts) as ydl:
@@ -304,21 +334,6 @@ def get_formats(url: str):
 #   YT-DLP DOWNLOAD WRAPPER
 # ==========================================
 
-def sanitize_filename(name: str):
-    """
-    Remove dangerous characters, trim long titles, keep file safe.
-    """
-    bad = r'<>:"/\|?*'
-    for b in bad:
-        name = name.replace(b, "")
-    name = name.strip().replace("\n", " ").replace("\r", " ")
-
-    if len(name) > SAFE_FILENAME_LEN:
-        name = name[:SAFE_FILENAME_LEN]
-
-    return name
-
-
 def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
     """
     Ultra-MAX yt-dlp downloader
@@ -347,7 +362,6 @@ def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
     except Exception as e:
         # FACEBOOK Fallback
         if "facebook.com" in host or "fb.watch" in url:
-
             fallback = ydl_opts.copy()
             fallback["force_generic_extractor"] = True
             fallback["extract_flat"] = False
@@ -367,26 +381,20 @@ def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
 
 async def download_direct_with_progress(url: str, filename: str, progress_msg):
     """
-    When yt-dlp cannot download → fallback direct HTTP downloader.
-    Supports:
-      ✔ large files
-      ✔ auto ETA
-      ✔ speed display
-      ✔ every 3 sec update
+    Direct HTTP(S) download using aiohttp with telegram message progress.
+    Returns (local_path, total_downloaded_bytes)
     """
     url = normalize_url(url)
-    filename = sanitize_filename(filename or "file")
 
+    filename = sanitize_filename(filename or "file")
     local_path = os.path.join(".", filename)
 
     total = 0
-    done = 0
-    last_update = 0
-    start = time.time()
+    downloaded = 0
+    last_edit_time = 0
+    start_time = time.time()
 
-    timeout = aiohttp.ClientTimeout(total=0, sock_connect=15, sock_read=0)
-
-    headers = {"User-Agent": USER_AGENT}
+    timeout = aiohttp.ClientTimeout(total=0, sock_connect=20, sock_read=0)
 
     connector_kwargs = {}
     if PROXY_URL:
@@ -394,15 +402,14 @@ async def download_direct_with_progress(url: str, filename: str, progress_msg):
 
     async with aiohttp.ClientSession(
         timeout=timeout,
-        headers=headers,
-        **connector_kwargs
+        headers={"User-Agent": USER_AGENT},
+        **connector_kwargs,
     ) as session:
-
-        req = {}
+        kwargs = {}
         if PROXY_URL:
-            req["proxy"] = PROXY_URL
+            kwargs["proxy"] = PROXY_URL
 
-        async with session.get(url, **req) as resp:
+        async with session.get(url, **kwargs) as resp:
             resp.raise_for_status()
 
             cl = resp.headers.get("Content-Length")
@@ -412,72 +419,89 @@ async def download_direct_with_progress(url: str, filename: str, progress_msg):
             os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
 
             with open(local_path, "wb") as f:
-                async for chunk in resp.content.iter_chunked(1024 * 128):
+                async for chunk in resp.content.iter_chunked(1024 * 64):
                     if not chunk:
                         continue
-
                     f.write(chunk)
-                    done += len(chunk)
+                    downloaded += len(chunk)
 
                     now = time.time()
-                    if now - last_update >= 3:
-                        last_update = now
+                    if now - last_edit_time >= 3:
+                        last_edit_time = now
+                        text = format_progress(
+                            "⬇️ Downloading",
+                            downloaded,
+                            total,
+                            start_time,
+                        )
                         try:
-                            await progress_msg.edit_text(
-                                format_progress("⬇️ Downloading", done, total, start)
-                            )
-                        except:
+                            await progress_msg.edit_text(text)
+                        except Exception:
                             pass
 
+    # final progress update
     try:
-        await progress_msg.edit_text(
-            format_progress("✅ Download Complete", done, total, start)
+        text = format_progress(
+            "✅ Download complete",
+            downloaded,
+            total,
+            start_time,
         )
-    except:
+        await progress_msg.edit_text(text)
+    except Exception:
         pass
 
-    return local_path, done
+    return local_path, downloaded
 
 
 # ==========================================
-#   PROGRESS BAR TEXT
+#   PROGRESS TEXT
 # ==========================================
 
-def format_progress(prefix: str, done: int, total: int, start: float):
-    elapsed = max(time.time() - start, 0.001)
-    speed = done / elapsed
+def format_progress(prefix: str, downloaded: int, total: int, start_time: float) -> str:
+    """
+    Human-readable progress text for Telegram message.
+    """
+    elapsed = max(time.time() - start_time, 1e-3)
+    speed = downloaded / elapsed  # bytes/sec
 
     if total > 0:
-        percent = done * 100 / total
-        filled = int(percent // 5)
-        bar = "█" * filled + "─" * (20 - filled)
+        percent = downloaded * 100 / total
+        bar_filled = int(percent // 5)
+        bar = "█" * bar_filled + "─" * (20 - bar_filled)
         total_str = human_readable(total)
     else:
         percent = 0
-        bar = "───────────────"
+        bar = "─" * 20
         total_str = "Unknown"
 
-    done_str = human_readable(done)
+    downloaded_str = human_readable(downloaded)
     speed_str = human_readable(int(speed)) + "/s"
 
-    if total > 0:
-        remaining = (total - done) / speed if speed > 0 else 0
-        mm, ss = divmod(int(remaining), 60)
-        eta = f"{mm}m {ss}s"
+    if total > 0 and speed > 0:
+        remaining = (total - downloaded) / speed
+        mins, secs = divmod(int(remaining), 60)
+        eta = f"{mins}m {secs}s"
     else:
         eta = "Calculating..."
 
-    return (
-        f"{prefix}\n"
+    text = (
+        f"{prefix}...\n"
         f"[{bar}] {percent:.1f}%\n"
-        f"Downloaded: {done_str} / {total_str}\n"
+        f"Downloaded: {downloaded_str} / {total_str}\n"
         f"Speed: {speed_str}\n"
         f"ETA: {eta}"
     )
+    return text
+
+
+# backward compatibility:
+def _format_progress_text(prefix, downloaded, total, start_time):
+    return format_progress(prefix, downloaded, total, start_time)
 
 
 # ==========================================
-#   UNIVERSAL VIDEO DETECTION (HTML SAFE)
+#   VIDEO DETECTION FOR DIRECT MODE
 # ==========================================
 
 def is_probably_video(url: str, ctype: str | None, filename: str | None):
@@ -492,44 +516,52 @@ def is_probably_video(url: str, ctype: str | None, filename: str | None):
 
     if ctype:
         low = ctype.lower()
-        if "video" in low or "audio" in low or "application/octet-stream" in low:
+        if "video" in low or "audio" in low:
             return True
 
-    # avoid html pages
-    parsed = urlparse(url).path.lower()
-    if parsed.endswith(".html") or parsed.endswith(".htm") or parsed.endswith(".php"):
+    path = urlparse(url).path.lower()
+    if any(path.endswith(ext) for ext in [".html", ".htm", ".php", ".asp", ".aspx"]):
         return False
 
     return False
 
 
 # ==========================================
-#   UNIVERSAL FALLBACK DOWNLOAD
+#   ULTRA FALLBACK HELPERS
 # ==========================================
+
+def _extract_first_mp4(text: str, base_url: str):
+    try:
+        matches = re.findall(r'https?://[^"\' ]+\.mp4', text)
+        if matches:
+            return matches[0]
+
+        rel = re.findall(r'\/[^"\' ]+\.mp4', text)
+        if rel:
+            from urllib.parse import urljoin
+            return urljoin(base_url, rel[0])
+    except Exception:
+        return None
+
 
 async def ultra_fallback_download(url: str, progress_msg):
     """
     If yt-dlp + direct both fail:
-    Try:
-      ✔ m3u8 sniffing
-      ✔ MP4 direct link extraction
-      ✔ simple redirect-tracing
+      ✔ Try to sniff m3u8/mp4 inside HTML
     """
     try:
         resp = requests.get(
-            url, timeout=10,
+            url,
+            timeout=10,
             allow_redirects=True,
             headers={"User-Agent": USER_AGENT},
-            proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
+            proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None,
         )
 
-        # M3U8 detection
-        if ".m3u8" in resp.text:
-            return _download_m3u8_inline(url, progress_msg)
+        text = resp.text or ""
 
-        # Find any mp4 direct link in HTML
-        if ".mp4" in resp.text:
-            mp4_link = _extract_first_mp4(resp.text, url)
+        if ".mp4" in text:
+            mp4_link = _extract_first_mp4(text, resp.url)
             if mp4_link:
                 return await download_direct_with_progress(
                     mp4_link,
@@ -541,48 +573,6 @@ async def ultra_fallback_download(url: str, progress_msg):
         pass
 
     raise Exception("❌ Ultra fallback failed.")
-
-
-def _extract_first_mp4(text: str, base_url: str):
-    """
-    Extract first .mp4 URL from HTML.
-    """
-    try:
-        import re
-        matches = re.findall(r'https?://[^"\' ]+\.mp4', text)
-        if matches:
-            return matches[0]
-
-        # relative mp4: /videos/x.mp4
-        rel = re.findall(r'\/[^"\' ]+\.mp4', text)
-        if rel:
-            from urllib.parse import urljoin
-            return urljoin(base_url, rel[0])
-    except:
-        return None
-
-
-def _download_m3u8_inline(url: str, progress_msg):
-    """
-    Internal simple M3U8 downloader.
-    (yt-dlp usually handles it, but fallback just in case)
-    """
-    import subprocess
-    out = f"m3u8_{int(time.time())}.mp4"
-
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", url,
-        "-c", "copy",
-        out,
-    ]
-
-    try:
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return out, os.path.getsize(out)
-    except:
-        return None
 
 
 # ==========================================
@@ -597,27 +587,25 @@ async def ultra_download_manager(
 ):
     """
     MASTER LOGIC:
-      1️⃣ HEAD check → video? use direct download
-      2️⃣ yt-dlp try
-      3️⃣ fallback direct
-      4️⃣ ultra fallback (HTML → mp4 / m3u8 detect)
+      1️⃣ HEAD check → direct video? then direct download
+      2️⃣ yt-dlp
+      3️⃣ direct fallback
+      4️⃣ ultra fallback (HTML sniff)
     """
     url = normalize_url(url)
 
-    # ---------- STEP 1 → HEAD CHECK ----------
     size, ctype, filename = head_info(url)
 
     if force_direct:
-        # forced direct mode
         return await download_direct_with_progress(url, filename or "file", progress_msg)
 
     if is_probably_video(url, ctype, filename):
         try:
             return await download_direct_with_progress(url, filename or "file", progress_msg)
-        except:
+        except Exception:
             pass
 
-    # ---------- STEP 2 → YT-DLP TRY ----------
+    # ytdlp
     tmp = f"temp_{int(time.time())}"
     try:
         local = download_with_ytdlp(url, fmt_id, tmp)
@@ -625,58 +613,24 @@ async def ultra_download_manager(
     except Exception:
         pass
 
-    # ---------- STEP 3 → DIRECT FALLBACK ----------
+    # direct fallback
     try:
         return await download_direct_with_progress(url, filename or "file", progress_msg)
-    except:
+    except Exception:
         pass
 
-    # ---------- STEP 4 → ULTRA-ULTIMATE FALLBACK ----------
+    # ultra fallback
     try:
         return await ultra_fallback_download(url, progress_msg)
-    except:
+    except Exception:
         pass
 
     raise Exception("❌ All download methods failed.")
 
 
 # ==========================================
-#   EXTRA HELPERS (OPTIONAL BUT USEFUL)
+#   SIMPLE PUBLIC WRAPPER
 # ==========================================
-
-def is_audio_ext(filename: str) -> bool:
-    if not filename:
-        return False
-    name = filename.lower()
-    for ext in AUDIO_EXTS:
-        if name.endswith(ext):
-            return True
-    return False
-
-
-def choose_filename_from_info(info: dict, default: str = "video") -> str:
-    """
-    yt-dlp info dict se best filename choose karta hai.
-    """
-    name = info.get("title") or default
-    ext = info.get("ext") or "mp4"
-    base = sanitize_filename(name)
-    return f"{base}.{ext}"
-
-
-# ==========================================
-#   PUBLIC EXPORTED API
-# ==========================================
-#   Ye functions tumhare bot ke dusre modules use kar sakte hain:
-#
-#   - is_video_ext(filename)
-#   - head_info(url)
-#   - get_formats(url)
-#   - download_with_ytdlp(url, fmt_id, tmp_name)
-#   - download_direct_with_progress(url, filename, progress_msg)
-#   - ultra_download_manager(url, fmt_id, progress_msg, force_direct=False)
-#   - format_progress(prefix, done, total, start)
-
 
 async def smart_download(
     url: str,
@@ -685,10 +639,7 @@ async def smart_download(
     force_direct: bool = False
 ):
     """
-    Simple wrapper jo tum handlers me use kar sakte ho:
-
+    Wrapper jo handlers use kar sakte hain:
         local_path, size = await smart_download(url, fmt_id, msg)
-
-    Ye internally ultra_download_manager ko call karta hai.
     """
     return await ultra_download_manager(url, fmt_id, progress_msg, force_direct=force_direct)
