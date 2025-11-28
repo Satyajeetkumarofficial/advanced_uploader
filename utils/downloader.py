@@ -1,5 +1,6 @@
+# utils/downloader.py
+
 import os
-import re
 import mimetypes
 import time
 from urllib.parse import urlparse
@@ -12,7 +13,7 @@ from utils.progress import human_readable
 
 
 # ==========================================
-#   CONSTANTS & BASIC HELPERS
+#   BASIC HELPERS
 # ==========================================
 
 VIDEO_EXTS = [
@@ -21,8 +22,15 @@ VIDEO_EXTS = [
 ]
 
 AUDIO_EXTS = [
-    ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".wav"
+    ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".wav",
 ]
+
+DOC_LIKE_EXTS = [
+    ".pdf", ".zip", ".rar", ".7z", ".apk", ".exe", ".txt", ".csv", ".xls", ".xlsx",
+    ".doc", ".docx", ".ppt", ".pptx", ".iso", ".gz", ".tar", ".xz",
+]
+
+HTML_EXTS = [".html", ".htm", ".php", ".asp", ".aspx", ".jsp"]
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -33,21 +41,8 @@ USER_AGENT = (
 COOKIES_FILE = os.getenv("COOKIES_FILE", "cookies.txt")
 PROXY_URL = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY") or None  # optional proxy
 
-# Popular CDN / media hosts hints (deep scan ke liye)
-POPULAR_CDN_HINTS = [
-    "fbcdn.net",
-    "cdninstagram.com",
-    "tiktokcdn",
-    "googlevideo.com",
-    "gvt1.com",
-    "akamaihd.net",
-    "cloudfront.net",
-    "video.twimg.com",
-    "twimg.com",
-    "scontent.",
-    "cdn.",
-]
 
+# ----------------------- EXT HELPERS ----------------------- #
 
 def is_video_ext(filename: str) -> bool:
     """
@@ -61,11 +56,23 @@ def is_video_ext(filename: str) -> bool:
     return False
 
 
+def is_audio_ext(filename: str) -> bool:
+    name = (filename or "").lower()
+    for ext in AUDIO_EXTS:
+        if name.endswith(ext):
+            return True
+    return False
+
+
+def is_html_like(filename: str) -> bool:
+    name = (filename or "").lower()
+    for ext in HTML_EXTS:
+        if name.endswith(ext):
+            return True
+    return False
+
+
 def _guess_extension_from_type(content_type: str | None) -> str | None:
-    """
-    HTTP Content-Type se extension guess kare.
-    audio/mpeg -> .mp3, video/mp4 -> .mp4, etc.
-    """
     if not content_type:
         return None
     ext = mimetypes.guess_extension(content_type.split(";")[0].strip())
@@ -73,6 +80,8 @@ def _guess_extension_from_type(content_type: str | None) -> str | None:
         return None
     return ext
 
+
+# ----------------------- URL NORMALIZE ----------------------- #
 
 def normalize_url(url: str) -> str:
     """
@@ -83,11 +92,11 @@ def normalize_url(url: str) -> str:
     """
     try:
         lower = url.lower()
-        if "facebook.com/share/" in lower:
+        if "facebook.com/share/" in lower or "fb.watch" in lower:
             resp = requests.get(
                 url,
                 allow_redirects=True,
-                timeout=10,
+                timeout=15,
                 headers={"User-Agent": USER_AGENT},
                 proxies={"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None,
             )
@@ -96,6 +105,8 @@ def normalize_url(url: str) -> str:
         pass
     return url
 
+
+# ----------------------- HEAD INFO ----------------------- #
 
 def head_info(url: str) -> tuple[int, str | None, str | None]:
     """
@@ -143,7 +154,7 @@ def head_info(url: str) -> tuple[int, str | None, str | None]:
             if base:
                 filename = base
 
-        # Agar filename missing aur content-type video/audio/doc ho
+        # Agar filename missing aur content-type video/audio ho
         if not filename and ctype:
             ext = _guess_extension_from_type(ctype)
             if ext:
@@ -195,12 +206,15 @@ def _build_ydl_opts(
     if not download:
         ydl_opts["skip_download"] = True
 
+    # ---------- BASE FORMAT ("Ultra MAX") ----------
     if fmt:
-        # Specific format id
+        # User selected specific format id
         ydl_opts["format"] = fmt
     else:
-        # “Ultra MAX” default best combined
-        ydl_opts["format"] = "bv*+ba/bestvideo+bestaudio/best"
+        # Try best combined audio+video, fallback best mp4
+        ydl_opts["format"] = (
+            "bv*+ba/bestvideo+bestaudio/best[ext=mp4]/best"
+        )
 
     # ---------- YouTube ----------
     if any(h in host for h in ["youtube.com", "youtu.be", "youtubekids.com", "m.youtube.com"]):
@@ -309,6 +323,17 @@ def _build_ydl_opts(
     return ydl_opts
 
 
+def is_ytdlp_site(url: str) -> bool:
+    """
+    Abhi ke liye sab URLs ko yt-dlp try karne do.
+    """
+    return True
+
+
+# ==========================================
+#   LIST FORMATS
+# ==========================================
+
 def get_formats(url: str) -> tuple[list[dict], dict]:
     """
     Use yt-dlp to fetch available formats for a URL.
@@ -342,13 +367,22 @@ def get_formats(url: str) -> tuple[list[dict], dict]:
 
     simple_formats = []
     for f in formats:
-        # skip non-media stuff
-        if f.get("vcodec") == "none" and f.get("acodec") == "none":
+        # ❌ GIF / image / audio-only / video-only ko skip karna hai:
+        vcodec = f.get("vcodec")
+        acodec = f.get("acodec")
+        ext = (f.get("ext") or "").lower()
+
+        # pure image / gif jese formats skip
+        if ext in ["gif", "jpg", "jpeg", "png", "webp"]:
+            continue
+
+        # hame mostly **audio+video** chahiye (FB/IG gif problem yahi se fix hogi)
+        if vcodec == "none" or acodec == "none":
             continue
 
         fmt = {
             "format_id": f.get("format_id"),
-            "ext": f.get("ext", "mp4"),
+            "ext": ext or "mp4",
             "height": f.get("height"),
             "filesize": f.get("filesize") or f.get("filesize_approx") or 0,
         }
@@ -356,11 +390,34 @@ def get_formats(url: str) -> tuple[list[dict], dict]:
         if fmt["format_id"]:
             simple_formats.append(fmt)
 
+    # Agar ऊपर वाले filter ke baad kuch bhi nahi bacha,
+    # to fallback: best formats jisme vcodec != "none" (mute video bhi chalega)
+    if not simple_formats:
+        for f in formats:
+            vcodec = f.get("vcodec")
+            ext = (f.get("ext") or "").lower()
+            if ext in ["gif", "jpg", "jpeg", "png", "webp"]:
+                continue
+            if vcodec == "none":
+                continue
+            fmt = {
+                "format_id": f.get("format_id"),
+                "ext": ext or "mp4",
+                "height": f.get("height"),
+                "filesize": f.get("filesize") or f.get("filesize_approx") or 0,
+            }
+            if fmt["format_id"]:
+                simple_formats.append(fmt)
+
     # height ke hisaab se sort (desc)
     simple_formats.sort(key=lambda x: (x.get("height") or 0), reverse=True)
 
     return simple_formats, info
 
+
+# ==========================================
+#   DOWNLOAD WITH YT-DLP
+# ==========================================
 
 def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
     """
@@ -381,7 +438,7 @@ def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
     )
 
     # ❌ Long title ko filename banne se roko
-    # Humesha sirf short template hi use hoga, jaise: temp_ytdlp_video.mp4
+    # Humesha sirf short template hi use hoga, jaise: temp_ytdlp_video.xxx
     safe_tmpl = tmp_name or "temp_ytdlp_video"
     ydl_opts["outtmpl"] = safe_tmpl + ".%(ext)s"
     ydl_opts["restrictfilenames"] = True      # special chars hata dega
@@ -392,6 +449,7 @@ def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
             info = ydl.extract_info(url, download=True)
             real_path = ydl.prepare_filename(info)
     except Exception as e:
+        # Facebook generic extractor fallback
         if "facebook.com" in host or "fb.watch" in url:
             fallback_opts = ydl_opts.copy()
             fallback_opts["force_generic_extractor"] = True
@@ -408,106 +466,19 @@ def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
 
 
 # ==========================================
-#   HTML MEDIA URL EXTRACTOR (DEEP SCAN)
+#   DIRECT DOWNLOAD WITH PROGRESS
 # ==========================================
 
-def extract_media_url_from_html(base_url: str, html: str) -> str | None:
-    """
-    HTML page ke andar se direct media/CDN URL nikalne ki koshish.
-    - <video src="...">
-    - <source src="...">
-    - <meta property="og:video" content="...">
-    - <meta property="og:video:url" content="...">
-    - Saare URLs scan + CDN hints + video/audio extensions
-    """
-    if not html:
-        return None
-
-    candidates: list[str] = []
-
-    # 1) <video src="...">
-    for m in re.findall(r"<video[^>]+src=[\"']([^\"']+)[\"']", html, flags=re.I):
-        candidates.append(m)
-
-    # 2) <source src="...">
-    for m in re.findall(r"<source[^>]+src=[\"']([^\"']+)[\"']", html, flags=re.I):
-        candidates.append(m)
-
-    # 3) og:video / og:video:url
-    for m in re.findall(
-        r"<meta[^>]+property=[\"']og:video(?::url)?[\"'][^>]+content=[\"']([^\"']+)[\"']",
-        html,
-        flags=re.I,
-    ):
-        candidates.append(m)
-
-    # 4) Sare raw URLs (fallback)
-    for m in re.findall(r"https?://[^\s\"'<>]+", html):
-        candidates.append(m)
-
-    if not candidates:
-        return None
-
-    # Score candidates
-    def score_url(u: str) -> int:
-        score = 0
-        l = u.lower()
-        # ext-based
-        for ext in VIDEO_EXTS + AUDIO_EXTS + [".m3u8"]:
-            if ext in l:
-                score += 5
-        # CDN hints
-        for hint in POPULAR_CDN_HINTS:
-            if hint in l:
-                score += 3
-        # small bonus for https
-        if l.startswith("https://"):
-            score += 1
-        return score
-
-    best_url = None
-    best_score = 0
-
-    for u in candidates:
-        u = u.strip()
-        if len(u) > 500:
-            continue
-        # relative URL ko chhod dete hain (simple)
-        if not u.lower().startswith("http"):
-            continue
-        sc = score_url(u)
-        if sc > best_score:
-            best_score = sc
-            best_url = u
-
-    return best_url
-
-
-# ==========================================
-#   DIRECT DOWNLOAD WITH PROGRESS + DEEP SCAN
-# ==========================================
-
-async def download_direct_with_progress(
-    url: str,
-    filename: str,
-    progress_msg,
-    _depth: int = 0,
-):
+async def download_direct_with_progress(url: str, filename: str, progress_msg):
     """
     Direct HTTP(S) download using aiohttp with telegram message progress.
     Returns (local_path, total_downloaded_bytes)
-
-    Features:
-    - MIME-type se extension fix
-    - Agar HTML aaye to:
-        * HTML parse kare
-        * CDN / media URLs (fbcdn, googlevideo, tiktokcdn, twimg, etc.) dhunde
-        * milne par recursive call (max depth 2)
     """
     url = normalize_url(url)
 
-    # safe base filename (agar koi naam nahi mila ho)
+    # safe filename
     filename = filename or "file_from_url"
+    local_path = os.path.join(".", filename)
 
     total_size = 0
     downloaded = 0
@@ -532,48 +503,11 @@ async def download_direct_with_progress(
         async with session.get(url, **kwargs) as resp:
             resp.raise_for_status()
 
-            # ---- SIZE ----
             cl = resp.headers.get("Content-Length")
             if cl and cl.isdigit():
                 total_size = int(cl)
 
-            # ---- MIME TYPE ----
-            content_type = (resp.headers.get("Content-Type") or "").lower()
-
-            # Agar HTML hai aur hum depth limit ke andar hai -> deep scan
-            if content_type.startswith("text/html") and _depth < 2:
-                try:
-                    html = await resp.text(errors="ignore")
-                except Exception:
-                    html = ""
-                media_url = extract_media_url_from_html(url, html)
-                if media_url and media_url != url:
-                    # Deep scan se kuch mila -> us nayi URL se download try karo
-                    return await download_direct_with_progress(
-                        media_url,
-                        filename,
-                        progress_msg,
-                        _depth=_depth + 1,
-                    )
-                # Agar HTML hi mila aur kuch media URL nahi mila,
-                # to niche normal download (HTML file) ke liye first chunk se continue karega.
-                # Baad me uploader HTML detect karke block kar sakta hai.
-
-            mime_ext = _guess_extension_from_type(content_type)  # audio/mpeg → .mp3 etc.
-
-            base, curr_ext = os.path.splitext(filename)
-            curr_ext = (curr_ext or "").lower()
-
-            # kuch gande / bekaar ext
-            bad_exts = ["", ".php", ".html", ".htm", ".aspx", ".jsp", ".cgi"]
-
-            # Agar server bol raha hai audio/video/doc aur filename ganda hai
-            if mime_ext and curr_ext in bad_exts:
-                # e.g. dhunwap → audio/mpeg → .mp3
-                filename = base + mime_ext
-
-            # ab final local path banao (fixed filename ke saath)
-            local_path = os.path.join(".", filename)
+            # ensure directory exists
             os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
 
             with open(local_path, "wb") as f:
