@@ -6,28 +6,30 @@ from config import FORCE_SUB_CHANNEL
 
 async def ensure_forcesub(app: Client, message: Message) -> bool:
     """
-    True  = user allowed (already joined / force-sub disabled)
-    False = join message send ho chuka, handler ko yahin return karna hai.
+    True  = user allowed
+    False = join msg bhej diya, handler ko return kar jaana hai
     """
-    # Agar force-sub set hi nahi hai to seedha allow
+    # Force-sub off hai to seedha allow
     if not FORCE_SUB_CHANNEL:
         return True
 
     try:
-        chat = FORCE_SUB_CHANNEL  # int ID ya @username, config se aa raha hai
+        chat = FORCE_SUB_CHANNEL  # @username ya invite link ya id
 
-        # yahan agar user member nahi hoga to UserNotParticipant aayega
+        # Agar username diya hai to pyrogram direct samajh lega
         await app.get_chat_member(chat, message.from_user.id)
         return True
 
     except UserNotParticipant:
-        # User channel me nahi hai → join karwao
-        # Agar username diya hai to link simple se bana sakte hain
+        # User member nahi hai → join karne ko bolo
+        channel_link = None
+
+        # 1) @username diya hai
         if isinstance(FORCE_SUB_CHANNEL, str) and FORCE_SUB_CHANNEL.startswith("@"):
             channel_link = f"https://t.me/{FORCE_SUB_CHANNEL.lstrip('@')}"
-        else:
-            # numeric ID hai → normal t.me open nahi banega, isliye simple text
-            channel_link = None
+        # 2) direct invite link diya ho (t.me/+..., https://t.me/joinchat/...)
+        elif isinstance(FORCE_SUB_CHANNEL, str) and FORCE_SUB_CHANNEL.startswith("http"):
+            channel_link = FORCE_SUB_CHANNEL
 
         buttons = []
         if channel_link:
@@ -50,15 +52,13 @@ async def ensure_forcesub(app: Client, message: Message) -> bool:
         )
         return False
 
-    except Exception as e:
-        # Yahan koi config issue / bot channel me add nahi / access error aa sakti hai
-        # Strict force-sub chahiye to yahan bhi block karna better hai:
+    except Exception:
+        # Yahan koi config / permission issue hai
         try:
             await message.reply_text(
-                "⚠️ Force Subscribe configuration me issue hai.\n"
+                "⚠️ Force subscribe configuration me problem hai.\n"
                 "Please admin se contact karo."
             )
         except Exception:
             pass
-        # Strict mode: user ko allow mat karo
         return False
