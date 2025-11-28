@@ -40,9 +40,18 @@ PROXIES = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
 # cookies.txt path (for yt-dlp)
 COOKIES_FILE = os.getenv("COOKIES_FILE", "/app/cookies.txt")
 
-# FORCE SUBSCRIBE CHANNEL (username ya numeric ID)
-# Example env: FORCE_SUB_CHANNEL=@MyChannel
-FORCE_SUB_CHANNEL = os.getenv("FORCE_SUB_CHANNEL", "-1003267218855").strip()
+# FORCE SUBSCRIBE CHANNEL
+# Example:
+#   FORCE_SUB_CHANNEL=@MyChannel
+#   ya FORCE_SUB_CHANNEL=-1001234567890
+_raw_force = os.getenv("FORCE_SUB_CHANNEL", "-1003267218855").strip()
+
+if _raw_force and _raw_force.lstrip("-").isdigit():
+    # numeric ID hua to int bana do
+    FORCE_SUB_CHANNEL = int(_raw_force)
+else:
+    # @username ya empty
+    FORCE_SUB_CHANNEL = _raw_force or None
 
 # progress update duration (seconds)
 PROGRESS_UPDATE_INTERVAL = 3
