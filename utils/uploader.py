@@ -23,6 +23,7 @@ async def upload_with_thumb_and_progress(
     progress_msg: Message,
     job_thumb_path: str | None = None,
 ):
+    # ---------------- SIZE CHECK ----------------
     file_size = os.path.getsize(path)
     if file_size > MAX_FILE_SIZE:
         await message.reply_text("❌ File Telegram limit se badi hai, upload nahi ho sakti.")
@@ -32,6 +33,7 @@ async def upload_with_thumb_and_progress(
     user = get_user_doc(user_id)
     base_name = os.path.basename(path)
 
+    # ---------------- FINAL NAME (PREFIX / SUFFIX) ----------------
     prefix = user.get("prefix") or ""
     suffix = user.get("suffix") or ""
     final_name = f"{prefix}{base_name}{suffix}"
@@ -44,7 +46,44 @@ async def upload_with_thumb_and_progress(
     else:
         caption = f"📁 `{final_name}`"
 
-    # Thumbnail priority:
+    # ─────────────────────────────────────
+    #  HTML / Webpage files ko block karo
+    # ─────────────────────────────────────
+    ext = os.path.splitext(path)[1].lower()
+    HTML_EXTS = [".html", ".htm", ".php", ".asp", ".aspx", ".jsp"]
+
+    if ext in HTML_EXTS:
+        try:
+            await progress_msg.edit_text(
+                "❌ Ye URL se sirf HTML/Webpage file mili hai.\n"
+                "📄 Webpage ko upload karna allowed nahi hai.\n"
+                "👉 Koi direct video/file link use karein (mp4, zip, etc.)."
+            )
+        except Exception:
+            try:
+                await message.reply_text(
+                    "❌ Ye URL se HTML/Webpage file mili hai.\n"
+                    "📄 Webpage upload supported nahi hai.\n"
+                    "👉 Koi direct video/file link use karein."
+                )
+            except Exception:
+                pass
+
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+        if job_thumb_path and os.path.exists(job_thumb_path):
+            try:
+                os.remove(job_thumb_path)
+            except Exception:
+                pass
+
+        return
+
+    # ---------------- THUMBNAIL PRIORITY ----------------
     # 1) job_thumb_path (YouTube / yt-dlp)
     # 2) user ka permanent thumb
     # 3) auto frame from video (middle frame)
@@ -63,7 +102,7 @@ async def upload_with_thumb_and_progress(
         except Exception:
             thumb_path = None
 
-    # AUTO THUMB (agar abhi bhi thumb nahi hai aur video file hai)
+    # AUTO THUMB (agar abhi bhi thumb nahi hai aur video file hai + setting video)
     if thumb_path is None and upload_type == "video" and is_video_ext(path):
         auto_thumb_dir = f"auto_thumb_{user_id}"
         os.makedirs(auto_thumb_dir, exist_ok=True)
@@ -130,9 +169,7 @@ async def upload_with_thumb_and_progress(
                 if os.path.exists(sample):
                     os.remove(sample)
 
-    # ❌ extra reply nahi, sirf progress_msg ko hi edit karenge
-    # await message.reply_text("📤 Upload start ho raha hai...")
-
+    # ---------------- PROGRESS HANDLER ----------------
     start_time = time.time()
     last_edit = start_time
 
@@ -161,7 +198,13 @@ async def upload_with_thumb_and_progress(
 
     sent = None
     try:
-        if upload_type == "video":
+        # ✅ FINAL RULE:
+        #   upload_type == "video"  & file is video  → send_video
+        #   upload_type == "video"  & NOT video     → send_document
+        #   upload_type == "document" (kuch bhi ho) → send_document
+
+        if upload_type == "video" and is_video_ext(path):
+            # VIDEO UPLOAD
             video_kwargs = dict(
                 chat_id=message.chat.id,
                 video=path,
@@ -187,6 +230,7 @@ async def upload_with_thumb_and_progress(
                     progress=upload_progress,
                 )
         else:
+            # NON-VIDEO ya upload_type=document → DOCUMENT
             sent = await app.send_document(
                 chat_id=message.chat.id,
                 document=path,
@@ -195,6 +239,7 @@ async def upload_with_thumb_and_progress(
                 progress=upload_progress,
             )
 
+        # ---------------- USAGE & STATS UPDATE ----------------
         increment_usage(user_id, file_size)
         update_stats(downloaded=0, uploaded=file_size)
 
@@ -220,6 +265,7 @@ async def upload_with_thumb_and_progress(
             f"File size: {human_readable(file_size)}"
         )
 
+        # ---------------- LOG CHANNEL ----------------
         if LOG_CHANNEL != 0:
             try:
                 text = (
@@ -246,6 +292,7 @@ async def upload_with_thumb_and_progress(
         return sent
 
     finally:
+        # ---------------- CLEANUP ----------------
         if os.path.exists(path):
             try:
                 os.remove(path)
