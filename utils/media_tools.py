@@ -1,107 +1,51 @@
+# utils/media_tools.py
 import os
 import subprocess
-from typing import List, Optional
-
+from typing import Optional, List
 
 def get_media_duration(path: str) -> Optional[int]:
     """
-    ffprobe se duration (seconds) nikalta hai.
+    Return media duration in seconds (int) using ffprobe.
+    Returns None on error.
     """
+    if not os.path.exists(path):
+        return None
     try:
         cmd = [
             "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
             path,
         ]
-        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode().strip()
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        out = out.decode().strip()
         if not out:
             return None
-        val = float(out)
-        if val <= 0:
-            return None
-        return int(val + 0.5)
+        # float seconds -> int seconds
+        duration = int(float(out))
+        return duration
     except Exception:
         return None
 
 
-def generate_screenshots(path: str, out_dir: str, count: int = 6) -> List[str]:
+def generate_thumbnail_frame(path: str, out_path: str, at_second: int = 3) -> Optional[str]:
     """
-    Album ke liye multiple screenshots (default 6).
+    Extract a frame at `at_second` seconds to use as thumbnail.
+    Returns output path on success else None.
     """
     try:
-        os.makedirs(out_dir, exist_ok=True)
-    except Exception:
-        return []
-
-    duration = get_media_duration(path)
-    if not duration or duration <= 0:
-        # Fallback timings
-        times = [5, 15, 30, 45, 60, 75][:count]
-    else:
-        step = max(duration // (count + 1), 1)
-        times = [step * (i + 1) for i in range(count)]
-
-    shots = []
-    for idx, t in enumerate(times, start=1):
-        out_path = os.path.join(out_dir, f"shot_{idx}.jpg")
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         cmd = [
             "ffmpeg",
             "-y",
-            "-ss",
-            str(t),
-            "-i",
-            path,
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale=320:-1:force_original_aspect_ratio=decrease",
-            "-q:v",
-            "5",
+            "-ss", str(at_second),
+            "-i", path,
+            "-frames:v", "1",
+            "-q:v", "2",
             out_path,
         ]
-        try:
-            subprocess.run(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=True,
-            )
-            if os.path.exists(out_path):
-                shots.append(out_path)
-        except Exception:
-            continue
-    return shots
-
-
-def generate_sample_clip(path: str, out_path: str, duration_sec: int = 15) -> Optional[str]:
-    """
-    Video ke starting se `duration_sec` seconds ka sample clip banata hai.
-    """
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-ss",
-        "0",
-        "-i",
-        path,
-        "-t",
-        str(duration_sec),
-        "-c",
-        "copy",
-        out_path,
-    ]
-    try:
-        subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-        )
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         if os.path.exists(out_path):
             return out_path
     except Exception:
@@ -109,40 +53,70 @@ def generate_sample_clip(path: str, out_path: str, duration_sec: int = 15) -> Op
     return None
 
 
-def generate_thumbnail_frame(path: str, out_path: str) -> Optional[str]:
+def generate_sample_clip(path: str, out_path: str, duration: int = 10, start_at: int = 0) -> Optional[str]:
     """
-    Ek beech ka frame thumbnail ke liye (video ka 'sense' dikhe).
+    Generate a short sample clip from `path`.
+    `duration` in seconds. `start_at` is start time in seconds.
+    Returns out_path on success else None.
     """
+    try:
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss", str(start_at),
+            "-i", path,
+            "-t", str(duration),
+            "-c", "copy",
+            out_path,
+        ]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        if os.path.exists(out_path):
+            return out_path
+    except Exception:
+        pass
+    return None
+
+
+def ensure_mp4_faststart(path: str) -> bool:
+    """
+    Remux file to ensure moov atom at start for progressive streaming.
+    Overwrites original file on success.
+    """
+    try:
+        base, ext = os.path.splitext(path)
+        tmp = base + "_faststart.mp4"
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            tmp,
+        ]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        if os.path.exists(tmp):
+            os.replace(tmp, path)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def generate_screenshots(path: str, out_dir: str, count: int = 3) -> List[str]:
+    """
+    Generate `count` evenly spaced screenshots. Returns list of file paths (may be empty).
+    """
+    screenshots = []
     dur = get_media_duration(path)
-    if dur and dur > 4:
-        t = dur // 2  # middle of video
-    else:
-        t = 2
-
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-ss",
-        str(t),
-        "-i",
-        path,
-        "-frames:v",
-        "1",
-        "-vf",
-        "scale=320:-1:force_original_aspect_ratio=decrease",
-        "-q:v",
-        "4",
-        out_path,
-    ]
-    try:
-        subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-        )
-        if os.path.exists(out_path):
-            return out_path
-    except Exception:
-        pass
-    return None
+    if not dur:
+        return screenshots
+    os.makedirs(out_dir, exist_ok=True)
+    step = max(1, dur // (count + 1))
+    for i in range(1, count + 1):
+        sec = i * step
+        outp = os.path.join(out_dir, f"screenshot_{i}.jpg")
+        thumb = generate_thumbnail_frame(path, outp, at_second=sec)
+        if thumb:
+            screenshots.append(thumb)
+    return screenshots
