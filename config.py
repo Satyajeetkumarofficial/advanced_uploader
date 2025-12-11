@@ -2,7 +2,7 @@ import os
 
 API_ID = int(os.getenv("API_ID", "25617967"))
 API_HASH = os.getenv("API_HASH", "10555bea1cdfc7d2303fc13b7fd187cc")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8090736841:AAEi5FkCzBhccIU8RbZBxmPTDq2V7a2c4UE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8090736841:AAGxfzGW6GE9tjKlhlHw4es-rUZbPeRwOFM")
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://manishak4251:EXfIp5PR2kqBLU3x@cluster0.cqfxq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 DB_NAME = os.getenv("DB_NAME", "advanced_uploader_bot")
