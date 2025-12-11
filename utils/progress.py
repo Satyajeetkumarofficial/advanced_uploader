@@ -1,48 +1,45 @@
+# utils/progress.py
 import math
 from pyrogram.types import Message
 
-
 def human_readable(size: int) -> str:
-    if size == 0:
+    if not size:
         return "0B"
     units = ["B", "KB", "MB", "GB", "TB"]
-    i = int(math.floor(math.log(size, 1024)))
+    i = int(math.floor(math.log(size, 1024))) if size > 0 else 0
     p = math.pow(1024, i)
-    s = round(size / p, 2)
+    s = round(size / p, 2) if p else 0
     return f"{s}{units[i]}"
 
+def format_eta(seconds: int) -> str:
+    seconds = int(seconds or 0)
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    if h > 0:
+        return f"{h}h {m}m {s}s"
+    if m > 0:
+        return f"{m}m {s}s"
+    return f"{s}s"
 
-def format_eta(seconds: float) -> str:
-    seconds = int(seconds)
-    if seconds < 0:
-        seconds = 0
-    m, s = divmod(seconds, 60)
-    if m == 0:
-        return f"{s}s"
-    return f"{m}m {s}s"
-
-
-async def edit_progress_message(
-    msg: Message,
-    prefix: str,
-    done: int,
-    total: int,
-    speed: float | None = None,
-    eta: float | None = None,
-):
-    if total <= 0:
-        percent = 0
-    else:
-        percent = done * 100 // total
-
-    text = f"{prefix} **{percent}%**\n\nDone: {human_readable(done)} / {human_readable(total)}"
-
-    if speed is not None and speed > 0:
-        text += f"\nSpeed: {human_readable(int(speed))}/s"
-    if eta is not None and eta > 0:
-        text += f"\nETA: {format_eta(eta)}"
-
+async def edit_progress_message(msg: Message, prefix: str, done: int, total: int, speed: float = None, eta: float = None):
+    """
+    Edits the provided message object (pyrogram.types.Message) with progress text.
+    `done` and `total` are bytes. `speed` bytes/sec.
+    """
+    if msg is None:
+        return
     try:
+        if total and total > 0:
+            percent = int(done * 100 / total)
+        else:
+            percent = 0
+        text = f"{prefix} **{percent}%**\n\nDone: {human_readable(done)} / {human_readable(total or 0)}"
+        if speed:
+            text += f"\nSpeed: {human_readable(int(speed))}/s"
+        if eta:
+            text += f"\nETA: {format_eta(int(eta))}"
         await msg.edit_text(text)
     except Exception:
+        # ignore any edit errors (message deleted or flood)
         pass
