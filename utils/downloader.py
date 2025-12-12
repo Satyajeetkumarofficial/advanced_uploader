@@ -210,6 +210,13 @@ def _build_ydl_opts(
     if fmt:
         # User selected specific format id
         ydl_opts["format"] = fmt
+
+# ensure merged output and faststart for mp4
+if "merge_output_format" not in ydl_opts:
+    ydl_opts["merge_output_format"] = "mp4"
+# add movflags faststart so moov atom is at front for streaming
+if "postprocessor_args" not in ydl_opts:
+    ydl_opts["postprocessor_args"] = ["-movflags", "+faststart"]
     else:
         # Try best combined audio+video, fallback best mp4
         ydl_opts["format"] = (
@@ -448,9 +455,33 @@ def download_with_ytdlp(url: str, fmt_id: str | None, tmp_name: str) -> str:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             real_path = ydl.prepare_filename(info)
+
+try:
+    from utils.media_tools import ensure_mp4_faststart
+    try:
+        if real_path and os.path.exists(real_path):
+            _ens = ensure_mp4_faststart(real_path)
+            if _ens:
+                print(f"[downloader] faststart remux applied for {real_path}")
+    except Exception as _e:
+        print(f"[downloader] faststart error: {_e}")
+except Exception:
+    pass
     except Exception as e:
         # Facebook generic extractor fallback
-        if "facebook.com" in host or "fb.watch" in url:
+        if "facebook.com" in host or "fb.watch" i
+try:
+    from utils.media_tools import ensure_mp4_faststart
+    try:
+        if real_path and os.path.exists(real_path):
+            _ens = ensure_mp4_faststart(real_path)
+            if _ens:
+                print(f"[downloader] faststart remux applied for {real_path}")
+    except Exception as _e:
+        print(f"[downloader] faststart error: {_e}")
+except Exception:
+    pass
+n url:
             fallback_opts = ydl_opts.copy()
             fallback_opts["force_generic_extractor"] = True
             fallback_opts["extract_flat"] = False

@@ -199,6 +199,18 @@ async def upload_with_thumb_and_progress(
     # ==============================
     duration = None
     if is_video_ext(path):
+
+# --- auto remux to ensure moov atom at start (faststart) ---
+try:
+    from utils.media_tools import ensure_mp4_faststart
+    try:
+        _ens_ok = ensure_mp4_faststart(path)
+        if _ens_ok:
+            print(f"[media_tools] faststart remux applied for {path}")
+    except Exception as _e:
+        print(f"[media_tools] faststart error: {_e}")
+except Exception:
+    _ens_ok = False
         duration = get_media_duration(path)
 
     sent = None
