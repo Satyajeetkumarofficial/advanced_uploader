@@ -78,7 +78,7 @@ async def upload_with_thumb_and_progress(
             thumb_path = None
 
     if thumb_path is None and is_video_ext(path):
-        auto_thumb_dir = f"auto_thumb_{user_id}"
+        auto_thumb_dir = f"/tmp/auto_thumb_{user_id}"
         os.makedirs(auto_thumb_dir, exist_ok=True)
         auto_thumb = os.path.join(auto_thumb_dir, "thumb.jpg")
         t = generate_thumbnail_frame(path, auto_thumb)
@@ -104,7 +104,14 @@ async def upload_with_thumb_and_progress(
         speed = current / elapsed if elapsed > 0 else 0
         eta = (total - current) / speed if speed > 0 else None
         last_edit = now
-        await edit_progress_message(progress_msg, "📤 Uploading...", current, total, speed, eta)
+        await edit_progress_message(
+            progress_msg,
+            "📤 Uploading...",
+            current,
+            total,
+            speed,
+            eta,
+        )
 
     # ==============================
     #   VIDEO DURATION
@@ -165,9 +172,11 @@ async def upload_with_thumb_and_progress(
             # -------- SAMPLE CLIP --------
             if user.get("send_sample"):
                 sample_duration = int(user.get("sample_duration") or 15)
-                sample_path = f"sample_{user_id}.mp4"
+                sample_path = f"/tmp/sample_{user_id}.mp4"
 
+                print("[DEBUG] Generating sample:", sample_path)
                 sample = generate_sample_clip(path, sample_path, sample_duration)
+
                 if sample and os.path.exists(sample_path):
                     try:
                         await app.send_video(
@@ -178,8 +187,8 @@ async def upload_with_thumb_and_progress(
                             supports_streaming=True,
                             has_spoiler=spoiler_flag,
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print("Sample send error:", e)
                     finally:
                         try:
                             os.remove(sample_path)
@@ -188,7 +197,9 @@ async def upload_with_thumb_and_progress(
 
             # -------- SCREENSHOTS --------
             if user.get("send_screenshots"):
-                from_dir = f"screens_{user_id}"
+                from_dir = f"/tmp/screens_{user_id}"
+                print("[DEBUG] Generating screenshots:", from_dir)
+
                 shots = generate_screenshots(path, out_dir=from_dir, count=6)
                 if shots:
                     media = []
@@ -202,8 +213,8 @@ async def upload_with_thumb_and_progress(
                         )
                     try:
                         await app.send_media_group(message.chat.id, media)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print("Screenshot send error:", e)
                     finally:
                         for s in shots:
                             try:
